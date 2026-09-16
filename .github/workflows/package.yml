@@ -114,8 +114,32 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           architecture: ${{ matrix.python_arch }}
+      - name: Install Linux Qt runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 \
+            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 \
+            libxcb-util1 libxcb-xkb1
       - name: Reconstruct complete source tree
         run: python ci/bootstrap_source.py --output build-src
+      - name: Normalize Linux AppImage packaging
+        working-directory: build-src
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('build_linux.sh')
+          s = p.read_text(encoding='utf-8')
+          needle = '    "$appimagetool" --appimage-extract-and-run "$appdir" "$appimage"'
+          replacement = '    rm -rf -- "$appdir/usr/share/metainfo"\n' + needle
+          if needle not in s:
+              raise SystemExit('appimagetool invocation not found')
+          if 'rm -rf -- "$appdir/usr/share/metainfo"' not in s:
+              s = s.replace(needle, replacement, 1)
+          p.write_text(s, encoding='utf-8', newline='\n')
+          PY
+          grep -n -A3 -B2 'appimage-extract-and-run' build_linux.sh
       - name: Build Linux package
         working-directory: build-src
         env:
@@ -154,6 +178,27 @@ jobs:
           architecture: ${{ matrix.python_arch }}
       - name: Reconstruct complete source tree
         run: python ci/bootstrap_source.py --output build-src
+      - name: Normalize macOS signing
+        working-directory: build-src
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('build_macos.sh')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('chmod +x --', 'chmod +x')
+          deep = 'codesign --force --deep --sign - "$app"'
+          plain = 'codesign --force --sign - "$app"'
+          if deep in s:
+              s = s.replace(deep, plain, 1)
+          elif plain not in s:
+              marker = 'zip_path="$release_root/Packizard-Builder-$version-macOS-$arch.zip"'
+              if marker not in s:
+                  raise SystemExit('macOS packaging marker not found')
+              s = s.replace(marker, plain + '\n\n' + marker, 1)
+          p.write_text(s, encoding='utf-8', newline='\n')
+          PY
+          grep -n 'codesign\|chmod +x' build_macos.sh
       - name: Build macOS package
         working-directory: build-src
         env:
@@ -167,6 +212,7 @@ jobs:
           if-no-files-found: error
           path: |
             release/*-macos-${{ matrix.arch }}/Packizard-Builder-*-macOS-${{ matrix.arch }}.zip
+            release/*-macos-${{ matrix.arch }}/Packizard-Builder-*-macOS-${{ matrix.arch }}.tar.gz
             release/*-macos-${{ matrix.arch }}/SHA256SUMS-macOS-${{ matrix.arch }}.txt
 
   release:

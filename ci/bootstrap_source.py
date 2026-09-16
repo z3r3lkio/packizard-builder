@@ -21,6 +21,30 @@ def run(*args: str, cwd: Path | None = None) -> None:
     subprocess.run(args, cwd=cwd, check=True)
 
 
+def _patch_packaging_scripts(output: Path) -> None:
+    """Apply small host-specific packaging fixes after the overlay is restored."""
+    macos_script = output / "build_macos.sh"
+    if macos_script.is_file():
+        text = macos_script.read_text(encoding="utf-8")
+        # GNU chmod accepts an explicit end-of-options marker; BSD chmod on macOS
+        # treats it as a path. Keep the command portable on both implementations.
+        text = text.replace("chmod +x -- ", "chmod +x ")
+        macos_script.write_text(text, encoding="utf-8", newline="\n")
+
+    linux_script = output / "build_linux.sh"
+    if linux_script.is_file():
+        text = linux_script.read_text(encoding="utf-8")
+        # appimagetool performs AppStream validation when metadata is present.
+        # Supply a reverse-DNS component ID and a metadata license so validation
+        # does not abort an otherwise successful binary build.
+        text = text.replace(
+            "  <id>packizard-builder</id>\n",
+            "  <id>io.github.z3r3lkio.packizard-builder</id>\n"
+            "  <metadata_license>CC0-1.0</metadata_license>\n",
+        )
+        linux_script.write_text(text, encoding="utf-8", newline="\n")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", default="build-src")
@@ -77,6 +101,8 @@ def main() -> int:
     finally:
         if temporary_patch is not None:
             temporary_patch.unlink(missing_ok=True)
+
+    _patch_packaging_scripts(output)
 
     branding_destination = output / "resources" / "branding"
     branding_destination.mkdir(parents=True, exist_ok=True)

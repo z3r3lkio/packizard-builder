@@ -68,6 +68,10 @@ def main() -> int:
         run("git", "clone", "--filter=blob:none", "--no-checkout", args.upstream, str(output))
         run("git", "checkout", "--detach", args.upstream_ref, cwd=output)
 
+    # The patch contains only text/source changes. CI stores one compact PNG;
+    # the sidebar can use the same artwork and PyInstaller converts the PNG to
+    # the platform icon format when necessary. Full local source archives may
+    # still carry the dedicated sidebar/ICO assets.
     try:
         run("git", "apply", "--binary", str(patch), cwd=output)
     finally:
@@ -95,6 +99,9 @@ def main() -> int:
     else:
         raise SystemExit("Missing Packizard branding artwork")
 
+    # A locally supplied PPR-PKG Builder remains optional and gitignored. This
+    # lets private/local workflows reuse it without making the public overlay
+    # responsible for redistributing third-party binaries.
     ppr_source = overlay / "tools" / "ppr_pkg_builder"
     if (ppr_source / "LibProsperoPkg.Gui.exe").is_file():
         ppr_destination = output / "tools" / "ppr_pkg_builder"

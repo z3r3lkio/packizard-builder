@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv*/
+build/
+dist/
+release/
+*.AppImage
+*.zip
+# PPR-PKG Builder is an external user-supplied application; never commit it.
+tools/ppr_pkg_builder/*
+!tools/ppr_pkg_builder/.gitkeep
+
+resources/branding/packizard_icon.icns
+
+build-src/

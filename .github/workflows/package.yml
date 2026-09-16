@@ -57,8 +57,8 @@ jobs:
     needs: policy
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           architecture: x64
@@ -135,8 +135,8 @@ jobs:
             python_arch: arm64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           architecture: ${{ matrix.python_arch }}
@@ -190,7 +190,7 @@ jobs:
 
       - name: Upload Windows package
         if: matrix.os == 'windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: Packizard-Builder-Windows-${{ matrix.arch }}
           if-no-files-found: error
@@ -201,7 +201,7 @@ jobs:
 
       - name: Upload Linux package
         if: matrix.os == 'linux'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: Packizard-Builder-Linux-${{ matrix.arch }}
           if-no-files-found: error
@@ -213,7 +213,7 @@ jobs:
 
       - name: Upload macOS package
         if: matrix.os == 'macos'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: Packizard-Builder-macOS-${{ matrix.arch }}
           if-no-files-found: error
@@ -229,7 +229,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Download all platform artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.1
         with:
           path: golden-assets
 
@@ -289,7 +289,7 @@ jobs:
             | xargs -0 sha256sum > golden-assets/SHA256SUMS-Golden.txt
 
       - name: Upload golden build bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: Packizard-Builder-Golden-${{ github.sha }}
           if-no-files-found: error
@@ -305,7 +305,7 @@ jobs:
       contents: write
       actions: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
       - name: Require tag commit to be on main
@@ -318,7 +318,7 @@ jobs:
             exit 1
           }
       - name: Download golden build bundle
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.1
         with:
           name: Packizard-Builder-Golden-${{ github.sha }}
           path: release-assets

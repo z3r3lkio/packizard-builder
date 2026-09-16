@@ -185,20 +185,19 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           p = Path('build_macos.sh')
-          s = p.read_text(encoding='utf-8')
-          s = s.replace('chmod +x --', 'chmod +x')
-          deep = 'codesign --force --deep --sign - "$app"'
+          lines = p.read_text(encoding='utf-8').splitlines()
+          lines = [line.replace('chmod +x --', 'chmod +x') for line in lines]
+          lines = [line.replace('codesign --force --deep --sign - "$app"', 'codesign --force --sign - "$app"') for line in lines]
           plain = 'codesign --force --sign - "$app"'
-          if deep in s:
-              s = s.replace(deep, plain, 1)
-          elif plain not in s:
-              marker = 'zip_path="$release_root/Packizard-Builder-$version-macOS-$arch.zip"'
-              if marker not in s:
-                  raise SystemExit('macOS packaging marker not found')
-              s = s.replace(marker, plain + '\n\n' + marker, 1)
-          p.write_text(s, encoding='utf-8', newline='\n')
+          if not any(plain in line for line in lines):
+              try:
+                  idx = next(i for i, line in enumerate(lines) if 'ditto -c -k' in line)
+              except StopIteration:
+                  raise SystemExit('macOS ditto packaging command not found')
+              lines.insert(idx, plain)
+          p.write_text('\n'.join(lines) + '\n', encoding='utf-8', newline='\n')
           PY
-          grep -n 'codesign\|chmod +x' build_macos.sh
+          grep -n 'codesign\|chmod +x\|ditto -c -k' build_macos.sh
       - name: Build macOS package
         working-directory: build-src
         env:

@@ -59,8 +59,12 @@ def _decode_incremental_patch(overlay: Path) -> Path | None:
 
 
 def _patch_macos_worker_specs(output: Path) -> None:
-    if sys.platform != "darwin":
-        return
+    """Normalize the macOS worker specs before applying the 0.2 overlay.
+
+    This is intentionally host-independent. CI reconstructs the same source tree on
+    Linux, Windows and macOS, so the textual base for the incremental patch must be
+    identical on every runner.
+    """
     for spec_name, executable_name in (("ampr_pack.spec", "ampr_pack"), ("ampr_pack_profile.spec", "ampr_pack_profile")):
         spec_path = output / spec_name
         text = spec_path.read_text(encoding="utf-8")

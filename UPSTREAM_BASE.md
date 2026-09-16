@@ -1,13 +1,13 @@
 # Upstream base
 
-Packizard Builder 0.1.1 is derived from the user-supplied `Lazy_AMPR-0.0.1.zip`.
+Packizard Builder 0.2.0 is derived from the user-supplied `Lazy_AMPR-0.0.1.zip` baseline corresponding to the early Lazy_AMPR repository state used by this project.
 
-The corresponding public Lazy_AMPR baseline is:
+Packizard-specific integration includes the desktop UI, state migration, build/release tooling, AMPR workflow orchestration, the integrated PKG page and post-compression PKG pipeline, and `Packizard.PkgBridge`.
 
-- Repository: https://github.com/Nazky/Lazy_AMPR
-- Commit: `033a85bf2cbc343ed8da81dcef55faac8ba7628a` (`first push`)
-- Version: `0.0.1`
+The PKG engine is no longer an external GUI launcher. Packizard.PkgBridge is built against the pinned validated LibProsperoPKG main snapshot declared in `ci/libprospero_pin.json` and mirrored into the reconstructed full source under `bridge/LIBPROSPERO_VERSION` and `bridge/LIBPROSPERO_REF`.
 
-The Packizard-specific PKG integration is now a launcher for the external **PPR-PKG Builder / LibProsperoPkg.Gui** application. The previous direct `core/prospero_pkg.py` bridge, native-engine downloader and internal PKG worker were removed so package generation cannot silently use a different implementation.
+Upstream references:
 
-The full source snapshot also contains the reworked PySide6 UI, Packizard branding, build scripts, state migration, tests and original AMPR tool tree.
+- https://github.com/Nazky/Lazy_AMPR
+- https://github.com/drakmor/ampr_emu
+- https://github.com/SvenGDK/LibProsperoPKG

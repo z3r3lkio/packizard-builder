@@ -79,6 +79,8 @@ jobs:
             echo "GNU-only chmod marker still present in macOS build script" >&2
             exit 1
           fi
+          echo '--- build_macos.sh ---'
+          sed -n '1,180p' build-src/build_macos.sh
       - name: Install test dependencies
         working-directory: build-src
         run: |
@@ -194,8 +196,8 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           path: |
-            build-src/release/*-windows-${{ matrix.arch }}/Packizard-Builder-*-Windows-${{ matrix.arch }}.zip
-            build-src/release/*-windows-${{ matrix.arch }}/SHA256SUMS-Windows-${{ matrix.arch }}.txt
+            release/*-windows-${{ matrix.arch }}/Packizard-Builder-*-Windows-${{ matrix.arch }}.zip
+            release/*-windows-${{ matrix.arch }}/SHA256SUMS-Windows-${{ matrix.arch }}.txt
 
       - name: Upload Linux package
         if: matrix.os == 'linux'
@@ -205,9 +207,9 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           path: |
-            build-src/release/*-linux-${{ matrix.arch }}/Packizard-Builder-*-Linux-${{ matrix.arch }}.AppImage
-            build-src/release/*-linux-${{ matrix.arch }}/Packizard-Builder-*-Linux-${{ matrix.arch }}.tar.gz
-            build-src/release/*-linux-${{ matrix.arch }}/SHA256SUMS-Linux-${{ matrix.arch }}.txt
+            release/*-linux-${{ matrix.arch }}/Packizard-Builder-*-Linux-${{ matrix.arch }}.AppImage
+            release/*-linux-${{ matrix.arch }}/Packizard-Builder-*-Linux-${{ matrix.arch }}.tar.gz
+            release/*-linux-${{ matrix.arch }}/SHA256SUMS-Linux-${{ matrix.arch }}.txt
 
       - name: Upload macOS package
         if: matrix.os == 'macos'
@@ -217,9 +219,9 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           path: |
-            build-src/release/*-macos-${{ matrix.arch }}/Packizard-Builder-*-macOS-${{ matrix.arch }}.zip
-            build-src/release/*-macos-${{ matrix.arch }}/Packizard-Builder-*-macOS-${{ matrix.arch }}.tar.gz
-            build-src/release/*-macos-${{ matrix.arch }}/SHA256SUMS-macOS-${{ matrix.arch }}.txt
+            release/*-macos-${{ matrix.arch }}/Packizard-Builder-*-macOS-${{ matrix.arch }}.zip
+            release/*-macos-${{ matrix.arch }}/Packizard-Builder-*-macOS-${{ matrix.arch }}.tar.gz
+            release/*-macos-${{ matrix.arch }}/SHA256SUMS-macOS-${{ matrix.arch }}.txt
 
   golden:
     name: Golden build

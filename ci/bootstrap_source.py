@@ -36,17 +36,20 @@ def main() -> int:
     output = Path(args.output).resolve()
     patch = overlay / "ci" / "packizard_overlay.patch"
     packed_patch = overlay / "ci" / "packizard_overlay.patch.xz.b64"
+    packed_parts = sorted((overlay / "ci").glob("packizard_overlay.patch.xz.b64.part-*"))
     temporary_patch = None
     if not patch.is_file():
-        if not packed_patch.is_file():
-            raise SystemExit(f"Missing overlay patch: {patch} (or {packed_patch})")
+        if packed_parts:
+            packed_text = "".join(part.read_text(encoding="ascii").strip() for part in packed_parts)
+        elif packed_patch.is_file():
+            packed_text = packed_patch.read_text(encoding="ascii").strip()
+        else:
+            raise SystemExit(f"Missing overlay patch: {patch} (or packed parts)")
         import base64
         import lzma
         import tempfile
 
-        decoded = lzma.decompress(
-            base64.b64decode(packed_patch.read_text(encoding="ascii").strip(), validate=True)
-        )
+        decoded = lzma.decompress(base64.b64decode(packed_text, validate=True))
         handle = tempfile.NamedTemporaryFile(prefix="packizard-overlay-", suffix=".patch", delete=False)
         handle.write(decoded)
         handle.close()

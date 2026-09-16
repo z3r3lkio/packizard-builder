@@ -73,14 +73,14 @@ jobs:
         run: |
           set -euo pipefail
           grep -F 'rm -rf -- "$appdir/usr/share/metainfo"' build-src/build_linux.sh
-          grep -F 'codesign --force --deep --sign - "$app"' build-src/build_macos.sh
-          grep -F 'find "$app/Contents/MacOS/workers" -type d' build-src/build_macos.sh
+          grep -F 'mkdir -p -- "$macos_dir/workers/ampr_pack" "$macos_dir/workers/ampr_pack_profile"' build-src/build_macos.sh
+          grep -F 'codesign --force --sign - "$macos_dir/workers/ampr_pack/ampr_pack"' build-src/build_macos.sh
+          grep -F 'codesign --force --sign - "$macos_dir/workers/ampr_pack_profile/ampr_pack_profile"' build-src/build_macos.sh
+          grep -F 'codesign --force --sign - "$app"' build-src/build_macos.sh
           if grep -Fq 'chmod +x --' build-src/build_macos.sh; then
             echo "GNU-only chmod marker still present in macOS build script" >&2
             exit 1
           fi
-          echo '--- build_macos.sh ---'
-          sed -n '1,180p' build-src/build_macos.sh
       - name: Install test dependencies
         working-directory: build-src
         run: |

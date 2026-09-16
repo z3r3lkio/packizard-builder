@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 UPSTREAM_URL = "https://github.com/Nazky/Lazy_AMPR.git"
@@ -21,45 +22,94 @@ def run(*args: str, cwd: Path | None = None) -> None:
     subprocess.run(args, cwd=cwd, check=True)
 
 
+def _patch_macos_worker_specs(output: Path) -> None:
+    """Convert macOS helper workers to one-file executables.
+
+    Keeping PyInstaller onedir worker trees inside the main .app creates nested
+    Python runtime directories that `codesign --deep` can misclassify as bundle
+    boundaries. The application only needs the helper executables, so macOS
+    builds freeze each helper as one file and retain the same runtime lookup
+    layout (workers/<tool>/<tool>).
+    """
+    if sys.platform != "darwin":
+        return
+
+    for spec_name, executable_name in (
+        ("ampr_pack.spec", "ampr_pack"),
+        ("ampr_pack_profile.spec", "ampr_pack_profile"),
+    ):
+        spec_path = output / spec_name
+        if not spec_path.is_file():
+            raise RuntimeError(f"Missing macOS worker spec: {spec_path}")
+
+        text = spec_path.read_text(encoding="utf-8")
+        old_exe = (
+            f'exe = EXE(pyz, a.scripts, [], exclude_binaries=True, '
+            f'name="{executable_name}", console=True)'
+        )
+        new_exe = (
+            f'exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], '
+            f'name="{executable_name}", console=True)'
+        )
+        old_collect = f'coll = COLLECT(exe, a.binaries, a.datas, name="{executable_name}")'
+
+        if old_exe not in text or old_collect not in text:
+            raise RuntimeError(f"Unexpected PyInstaller worker spec layout: {spec_path}")
+
+        text = text.replace(old_exe, new_exe, 1)
+        text = text.replace(old_collect + "\n", "", 1)
+        spec_path.write_text(text, encoding="utf-8", newline="\n")
+
+
 def _patch_packaging_scripts(output: Path) -> None:
     """Apply deterministic host-specific packaging fixes after restoring the overlay."""
     macos_script = output / "build_macos.sh"
     if macos_script.is_file():
-        lines = macos_script.read_text(encoding="utf-8").splitlines()
-
+        text = macos_script.read_text(encoding="utf-8")
         # BSD/macOS chmod does not accept GNU's explicit `--` marker.
-        lines = [line.replace("chmod +x --", "chmod +x") for line in lines]
+        text = text.replace("chmod +x --", "chmod +x")
 
-        # Workers are copied into the already-created PyInstaller app. Their
-        # package metadata can look like nested bundles to codesign, so remove
-        # metadata that is irrelevant at runtime and re-seal the final app only
-        # after all workers have been embedded.
+        # Preserve the worker lookup contract while embedding one-file workers.
+        old_worker_copy = "\n".join(
+            [
+                'mkdir -p -- "$macos_dir/workers"',
+                'cp -a -- "$dist/ampr_pack" "$macos_dir/workers/"',
+                'cp -a -- "$dist/ampr_pack_profile" "$macos_dir/workers/"',
+            ]
+        )
+        new_worker_copy = "\n".join(
+            [
+                'mkdir -p -- "$macos_dir/workers/ampr_pack" "$macos_dir/workers/ampr_pack_profile"',
+                'cp -a -- "$dist/ampr_pack" "$macos_dir/workers/ampr_pack/ampr_pack"',
+                'cp -a -- "$dist/ampr_pack_profile" "$macos_dir/workers/ampr_pack_profile/ampr_pack_profile"',
+            ]
+        )
+        if old_worker_copy not in text and new_worker_copy not in text:
+            raise RuntimeError("Unexpected macOS worker copy block")
+        text = text.replace(old_worker_copy, new_worker_copy, 1)
+
+        lines = text.splitlines()
         lines = [
             line
             for line in lines
-            if 'codesign --force --deep --sign - "$app"' not in line
-            and 'codesign --force --sign - "$app"' not in line
+            if "codesign --force" not in line
+            and "codesign --verify" not in line
             and 'find "$app/Contents/MacOS/workers" -type d' not in line
         ]
         try:
-            verify_idx = next(
-                i
-                for i, line in enumerate(lines)
-                if 'codesign --verify' in line and '"$app"' in line
-            )
-        except StopIteration:
-            try:
-                verify_idx = next(i for i, line in enumerate(lines) if "ditto -c -k" in line)
-            except StopIteration as exc:
-                raise RuntimeError("macOS signing/packaging marker not found") from exc
+            xattr_idx = next(i for i, line in enumerate(lines) if 'xattr -cr "$app"' in line)
+        except StopIteration as exc:
+            raise RuntimeError("macOS xattr/signing marker not found") from exc
 
-        indent = lines[verify_idx][:-len(lines[verify_idx].lstrip())]
+        indent = lines[xattr_idx][:-len(lines[xattr_idx].lstrip())]
         signing_block = [
+            indent + 'codesign --force --sign - "$macos_dir/workers/ampr_pack/ampr_pack"',
             indent
-            + 'find "$app/Contents/MacOS/workers" -type d \\( -name \'*.dist-info\' -o -name \'*.egg-info\' \\) -prune -exec rm -rf {} +',
-            indent + 'codesign --force --deep --sign - "$app"',
+            + 'codesign --force --sign - "$macos_dir/workers/ampr_pack_profile/ampr_pack_profile"',
+            indent + 'codesign --force --sign - "$app"',
+            indent + 'codesign --verify --deep --strict "$app"',
         ]
-        lines[verify_idx:verify_idx] = signing_block
+        lines[xattr_idx + 1 : xattr_idx + 1] = signing_block
         macos_script.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 
     linux_script = output / "build_linux.sh"
@@ -137,6 +187,7 @@ def main() -> int:
         if temporary_patch is not None:
             temporary_patch.unlink(missing_ok=True)
 
+    _patch_macos_worker_specs(output)
     _patch_packaging_scripts(output)
 
     branding_destination = output / "resources" / "branding"
@@ -170,14 +221,6 @@ def main() -> int:
         if ppr_destination.exists():
             shutil.rmtree(ppr_destination)
         shutil.copytree(ppr_source, ppr_destination)
-
-    # Temporary CI diagnostics while converting macOS workers from onedir to
-    # onefile packaging. This is removed once the packaging fix is validated.
-    for spec_name in ("ampr_pack.spec", "ampr_pack_profile.spec"):
-        spec_path = output / spec_name
-        if spec_path.is_file():
-            print(f"--- {spec_name} ---")
-            print(spec_path.read_text(encoding="utf-8"))
 
     print(f"Prepared Packizard source at {output}")
     return 0

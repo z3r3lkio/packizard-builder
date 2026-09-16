@@ -252,12 +252,37 @@ jobs:
             }
           done
 
-          compgen -G 'golden-assets/Packizard-Builder-Windows-x64/*.zip' >/dev/null
-          compgen -G 'golden-assets/Packizard-Builder-Windows-arm64/*.zip' >/dev/null
-          compgen -G 'golden-assets/Packizard-Builder-Linux-x64/*.AppImage' >/dev/null
-          compgen -G 'golden-assets/Packizard-Builder-Linux-arm64/*.AppImage' >/dev/null
-          compgen -G 'golden-assets/Packizard-Builder-macOS-x64/*.zip' >/dev/null
-          compgen -G 'golden-assets/Packizard-Builder-macOS-arm64/*.zip' >/dev/null
+          require_file() {
+            local artifact="$1"
+            local pattern="$2"
+            local found
+            found="$(find "golden-assets/$artifact" -type f -name "$pattern" -print -quit)"
+            if [[ -z "$found" ]]; then
+              echo "Missing $pattern inside $artifact" >&2
+              find "golden-assets/$artifact" -type f -print >&2
+              exit 1
+            fi
+            echo "Validated: $found"
+          }
+
+          require_file Packizard-Builder-Windows-x64 'Packizard-Builder-*-Windows-x64.zip'
+          require_file Packizard-Builder-Windows-arm64 'Packizard-Builder-*-Windows-arm64.zip'
+          require_file Packizard-Builder-Linux-x64 'Packizard-Builder-*-Linux-x64.AppImage'
+          require_file Packizard-Builder-Linux-arm64 'Packizard-Builder-*-Linux-arm64.AppImage'
+          require_file Packizard-Builder-macOS-x64 'Packizard-Builder-*-macOS-x64.zip'
+          require_file Packizard-Builder-macOS-arm64 'Packizard-Builder-*-macOS-arm64.zip'
+
+          for artifact in "${expected[@]}"; do
+            manifest="$(find "golden-assets/$artifact" -type f -name 'SHA256SUMS-*.txt' -print -quit)"
+            if [[ -z "$manifest" ]]; then
+              echo "Missing checksum manifest inside $artifact" >&2
+              exit 1
+            fi
+            manifest_dir="$(dirname "$manifest")"
+            manifest_name="$(basename "$manifest")"
+            echo "Checking: $manifest"
+            (cd "$manifest_dir" && sha256sum -c "$manifest_name")
+          done
 
           find golden-assets -type f ! -name 'SHA256SUMS*' -print0 \
             | sort -z \

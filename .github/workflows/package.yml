@@ -130,16 +130,17 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           p = Path('build_linux.sh')
-          s = p.read_text(encoding='utf-8')
-          needle = '    "$appimagetool" --appimage-extract-and-run "$appdir" "$appimage"'
-          replacement = '    rm -rf -- "$appdir/usr/share/metainfo"\n' + needle
-          if needle not in s:
-              raise SystemExit('appimagetool invocation not found')
-          if 'rm -rf -- "$appdir/usr/share/metainfo"' not in s:
-              s = s.replace(needle, replacement, 1)
-          p.write_text(s, encoding='utf-8', newline='\n')
+          lines = p.read_text(encoding='utf-8').splitlines()
+          if not any('rm -rf -- "$appdir/usr/share/metainfo"' in line for line in lines):
+              try:
+                  idx = next(i for i, line in enumerate(lines) if 'appimage-extract-and-run' in line and '$appimagetool' in line)
+              except StopIteration:
+                  raise SystemExit('appimagetool invocation not found')
+              indent = lines[idx][:-len(lines[idx].lstrip())]
+              lines.insert(idx, indent + 'rm -rf -- "$appdir/usr/share/metainfo"')
+          p.write_text('\n'.join(lines) + '\n', encoding='utf-8', newline='\n')
           PY
-          grep -n -A3 -B2 'appimage-extract-and-run' build_linux.sh
+          grep -n -A3 -B3 'appimage-extract-and-run' build_linux.sh
       - name: Build Linux package
         working-directory: build-src
         env:

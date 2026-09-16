@@ -171,6 +171,14 @@ def main() -> int:
             shutil.rmtree(ppr_destination)
         shutil.copytree(ppr_source, ppr_destination)
 
+    # Temporary CI diagnostics while converting macOS workers from onedir to
+    # onefile packaging. This is removed once the packaging fix is validated.
+    for spec_name in ("ampr_pack.spec", "ampr_pack_profile.spec"):
+        spec_path = output / spec_name
+        if spec_path.is_file():
+            print(f"--- {spec_name} ---")
+            print(spec_path.read_text(encoding="utf-8"))
+
     print(f"Prepared Packizard source at {output}")
     return 0
 

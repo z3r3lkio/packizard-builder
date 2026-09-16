@@ -24,6 +24,10 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           architecture: x64
+      - name: Install headless Qt system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0
       - name: Reconstruct complete source tree
         run: python ci/bootstrap_source.py --output build-src
       - name: Install test dependencies
@@ -33,6 +37,8 @@ jobs:
           python -m pip install -r requirements-build.txt
       - name: Run tests
         working-directory: build-src
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: python -m unittest discover -s tests -v
       - name: Compile Python sources
         working-directory: build-src

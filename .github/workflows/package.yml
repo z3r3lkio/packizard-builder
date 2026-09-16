@@ -2,21 +2,59 @@ name: Package Packizard Builder
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - UAT
+      - main
   push:
     branches:
-      - main
+      - UAT
     tags:
       - "v*"
 
 permissions:
   contents: read
+  actions: read
+  pull-requests: read
 
 env:
   PYTHON_VERSION: "3.12"
 
+concurrency:
+  group: packizard-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  policy:
+    name: PR policy · branch flow
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Enforce promotion path
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          case "$BASE_REF" in
+            main)
+              if [[ "$HEAD_REF" != "UAT" ]]; then
+                echo "PRs into main must come from UAT. Got: $HEAD_REF" >&2
+                exit 1
+              fi
+              ;;
+            UAT)
+              if [[ "$HEAD_REF" != feature/* ]]; then
+                echo "PRs into UAT must come from feature/* branches. Got: $HEAD_REF" >&2
+                exit 1
+              fi
+              ;;
+          esac
+
   verify:
     name: Tests · Linux x64
+    needs: policy
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -30,6 +68,19 @@ jobs:
           sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0
       - name: Reconstruct complete source tree
         run: python ci/bootstrap_source.py --output build-src
+      - name: Validate packaging patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F 'rm -rf -- "$appdir/usr/share/metainfo"' build-src/build_linux.sh
+          grep -F 'mkdir -p -- "$macos_dir/workers/ampr_pack" "$macos_dir/workers/ampr_pack_profile"' build-src/build_macos.sh
+          grep -F 'codesign --force --sign - "$macos_dir/workers/ampr_pack/ampr_pack"' build-src/build_macos.sh
+          grep -F 'codesign --force --sign - "$macos_dir/workers/ampr_pack_profile/ampr_pack_profile"' build-src/build_macos.sh
+          grep -F 'codesign --force --sign - "$app"' build-src/build_macos.sh
+          if grep -Fq 'chmod +x --' build-src/build_macos.sh; then
+            echo "GNU-only chmod marker still present in macOS build script" >&2
+            exit 1
+          fi
       - name: Install test dependencies
         working-directory: build-src
         run: |
@@ -44,130 +95,42 @@ jobs:
         working-directory: build-src
         run: python -m compileall -q .
 
-  windows:
-    name: Windows · ${{ matrix.arch }}
+  build:
+    name: ${{ matrix.platform }} · ${{ matrix.arch }}
     needs: verify
     strategy:
       fail-fast: false
+      max-parallel: 3
       matrix:
         include:
-          - arch: x64
+          - platform: Windows
+            os: windows
+            arch: x64
             runner: windows-2025
             python_arch: x64
-          - arch: arm64
+          - platform: Windows
+            os: windows
+            arch: arm64
             runner: windows-11-arm
             python_arch: arm64
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          architecture: ${{ matrix.python_arch }}
-      - name: Reconstruct complete source tree
-        run: python ci/bootstrap_source.py --output build-src
-      - name: Optionally stage PPR-PKG Builder
-        if: ${{ vars.FPKG_GUI_ARCHIVE_URL != '' && vars.FPKG_GUI_ARCHIVE_SHA256 != '' }}
-        shell: pwsh
-        run: |
-          python build-src/scripts/stage_fpkg_gui.py `
-            --url "${{ vars.FPKG_GUI_ARCHIVE_URL }}" `
-            --sha256 "${{ vars.FPKG_GUI_ARCHIVE_SHA256 }}" `
-            --destination "build-src/tools/ppr_pkg_builder"
-      - name: Create build environment
-        shell: pwsh
-        working-directory: build-src
-        run: |
-          python -m venv .venv312
-          .\.venv312\Scripts\python -m pip install --upgrade pip
-          .\.venv312\Scripts\python -m pip install -r requirements-build.txt
-      - name: Build Windows package
-        shell: pwsh
-        working-directory: build-src
-        run: .\build_windows.ps1 -Architecture "${{ matrix.arch }}"
-      - name: Upload Windows package
-        uses: actions/upload-artifact@v4
-        with:
-          name: Packizard-Builder-Windows-${{ matrix.arch }}
-          if-no-files-found: error
-          path: |
-            release/*-windows-${{ matrix.arch }}/Packizard-Builder-*-Windows-${{ matrix.arch }}.zip
-            release/*-windows-${{ matrix.arch }}/SHA256SUMS-Windows-${{ matrix.arch }}.txt
-
-  linux:
-    name: Linux · ${{ matrix.arch }}
-    needs: verify
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x64
+          - platform: Linux
+            os: linux
+            arch: x64
             runner: ubuntu-24.04
             python_arch: x64
-          - arch: arm64
+          - platform: Linux
+            os: linux
+            arch: arm64
             runner: ubuntu-24.04-arm
             python_arch: arm64
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          architecture: ${{ matrix.python_arch }}
-      - name: Install Linux Qt runtime libraries
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 \
-            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 \
-            libxcb-util1 libxcb-xkb1
-      - name: Reconstruct complete source tree
-        run: python ci/bootstrap_source.py --output build-src
-      - name: Normalize Linux AppImage packaging
-        working-directory: build-src
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('build_linux.sh')
-          lines = p.read_text(encoding='utf-8').splitlines()
-          if not any('rm -rf -- "$appdir/usr/share/metainfo"' in line for line in lines):
-              try:
-                  idx = next(i for i, line in enumerate(lines) if 'appimage-extract-and-run' in line and '$appimagetool' in line)
-              except StopIteration:
-                  raise SystemExit('appimagetool invocation not found')
-              indent = lines[idx][:-len(lines[idx].lstrip())]
-              lines.insert(idx, indent + 'rm -rf -- "$appdir/usr/share/metainfo"')
-          p.write_text('\n'.join(lines) + '\n', encoding='utf-8', newline='\n')
-          PY
-          grep -n -A3 -B3 'appimage-extract-and-run' build_linux.sh
-      - name: Build Linux package
-        working-directory: build-src
-        env:
-          PYTHON: python3
-          PACKIZARD_TARGET_ARCH: ${{ matrix.arch }}
-        run: ./build_linux.sh
-      - name: Upload Linux packages
-        uses: actions/upload-artifact@v4
-        with:
-          name: Packizard-Builder-Linux-${{ matrix.arch }}
-          if-no-files-found: error
-          path: |
-            release/*-linux-${{ matrix.arch }}/Packizard-Builder-*-Linux-${{ matrix.arch }}.AppImage
-            release/*-linux-${{ matrix.arch }}/Packizard-Builder-*-Linux-${{ matrix.arch }}.tar.gz
-            release/*-linux-${{ matrix.arch }}/SHA256SUMS-Linux-${{ matrix.arch }}.txt
-
-  macos:
-    name: macOS · ${{ matrix.arch }}
-    needs: verify
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x64
+          - platform: macOS
+            os: macos
+            arch: x64
             runner: macos-15-intel
             python_arch: x64
-          - arch: arm64
+          - platform: macOS
+            os: macos
+            arch: arm64
             runner: macos-15
             python_arch: arm64
     runs-on: ${{ matrix.runner }}
@@ -177,65 +140,196 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           architecture: ${{ matrix.python_arch }}
+
+      - name: Install Linux Qt runtime libraries
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 \
+            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 \
+            libxcb-util1 libxcb-xkb1
+
       - name: Reconstruct complete source tree
         run: python ci/bootstrap_source.py --output build-src
-      - name: Normalize macOS signing
-        working-directory: build-src
-        shell: bash
+
+      - name: Optionally stage PPR-PKG Builder
+        if: matrix.os == 'windows' && vars.FPKG_GUI_ARCHIVE_URL != '' && vars.FPKG_GUI_ARCHIVE_SHA256 != ''
+        shell: pwsh
         run: |
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('build_macos.sh')
-          lines = p.read_text(encoding='utf-8').splitlines()
-          lines = [line.replace('chmod +x --', 'chmod +x') for line in lines]
-          lines = [line for line in lines if 'codesign --force --deep --sign - "$app"' not in line and 'codesign --force --sign - "$app"' not in line]
-          sign = 'codesign --force --sign - "$app"'
-          try:
-              verify_idx = next(i for i, line in enumerate(lines) if 'codesign --verify' in line and '"$app"' in line)
-          except StopIteration:
-              try:
-                  verify_idx = next(i for i, line in enumerate(lines) if 'ditto -c -k' in line)
-              except StopIteration:
-                  raise SystemExit('macOS signing/packaging marker not found')
-          lines.insert(verify_idx, sign)
-          p.write_text('\n'.join(lines) + '\n', encoding='utf-8', newline='\n')
-          PY
-          grep -n 'codesign\|chmod +x\|ditto -c -k' build_macos.sh
+          python build-src/scripts/stage_fpkg_gui.py `
+            --url "${{ vars.FPKG_GUI_ARCHIVE_URL }}" `
+            --sha256 "${{ vars.FPKG_GUI_ARCHIVE_SHA256 }}" `
+            --destination "build-src/tools/ppr_pkg_builder"
+
+      - name: Build Windows package
+        if: matrix.os == 'windows'
+        shell: pwsh
+        working-directory: build-src
+        run: |
+          python -m venv .venv312
+          .\.venv312\Scripts\python -m pip install --upgrade pip
+          .\.venv312\Scripts\python -m pip install -r requirements-build.txt
+          .\build_windows.ps1 -Architecture "${{ matrix.arch }}"
+
+      - name: Build Linux package
+        if: matrix.os == 'linux'
+        working-directory: build-src
+        env:
+          PYTHON: python3
+          PACKIZARD_TARGET_ARCH: ${{ matrix.arch }}
+        run: ./build_linux.sh
+
       - name: Build macOS package
+        if: matrix.os == 'macos'
         working-directory: build-src
         env:
           PYTHON: python3
           PACKIZARD_TARGET_ARCH: ${{ matrix.arch }}
         run: ./build_macos.sh
+
+      - name: Upload Windows package
+        if: matrix.os == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Packizard-Builder-Windows-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            release/*-windows-${{ matrix.arch }}/Packizard-Builder-*-Windows-${{ matrix.arch }}.zip
+            release/*-windows-${{ matrix.arch }}/SHA256SUMS-Windows-${{ matrix.arch }}.txt
+
+      - name: Upload Linux package
+        if: matrix.os == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Packizard-Builder-Linux-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            release/*-linux-${{ matrix.arch }}/Packizard-Builder-*-Linux-${{ matrix.arch }}.AppImage
+            release/*-linux-${{ matrix.arch }}/Packizard-Builder-*-Linux-${{ matrix.arch }}.tar.gz
+            release/*-linux-${{ matrix.arch }}/SHA256SUMS-Linux-${{ matrix.arch }}.txt
+
       - name: Upload macOS package
+        if: matrix.os == 'macos'
         uses: actions/upload-artifact@v4
         with:
           name: Packizard-Builder-macOS-${{ matrix.arch }}
           if-no-files-found: error
+          retention-days: 14
           path: |
             release/*-macos-${{ matrix.arch }}/Packizard-Builder-*-macOS-${{ matrix.arch }}.zip
             release/*-macos-${{ matrix.arch }}/Packizard-Builder-*-macOS-${{ matrix.arch }}.tar.gz
             release/*-macos-${{ matrix.arch }}/SHA256SUMS-macOS-${{ matrix.arch }}.txt
 
+  golden:
+    name: Golden build
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: golden-assets
+
+      - name: Validate golden artifact set
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=(
+            Packizard-Builder-Windows-x64
+            Packizard-Builder-Windows-arm64
+            Packizard-Builder-Linux-x64
+            Packizard-Builder-Linux-arm64
+            Packizard-Builder-macOS-x64
+            Packizard-Builder-macOS-arm64
+          )
+          for artifact in "${expected[@]}"; do
+            test -d "golden-assets/$artifact" || {
+              echo "Missing artifact: $artifact" >&2
+              exit 1
+            }
+          done
+
+          require_file() {
+            local artifact="$1"
+            local pattern="$2"
+            local found
+            found="$(find "golden-assets/$artifact" -type f -name "$pattern" -print -quit)"
+            if [[ -z "$found" ]]; then
+              echo "Missing $pattern inside $artifact" >&2
+              find "golden-assets/$artifact" -type f -print >&2
+              exit 1
+            fi
+            echo "Validated: $found"
+          }
+
+          require_file Packizard-Builder-Windows-x64 'Packizard-Builder-*-Windows-x64.zip'
+          require_file Packizard-Builder-Windows-arm64 'Packizard-Builder-*-Windows-arm64.zip'
+          require_file Packizard-Builder-Linux-x64 'Packizard-Builder-*-Linux-x64.AppImage'
+          require_file Packizard-Builder-Linux-arm64 'Packizard-Builder-*-Linux-arm64.AppImage'
+          require_file Packizard-Builder-macOS-x64 'Packizard-Builder-*-macOS-x64.zip'
+          require_file Packizard-Builder-macOS-arm64 'Packizard-Builder-*-macOS-arm64.zip'
+
+          for artifact in "${expected[@]}"; do
+            manifest="$(find "golden-assets/$artifact" -type f -name 'SHA256SUMS-*.txt' -print -quit)"
+            if [[ -z "$manifest" ]]; then
+              echo "Missing checksum manifest inside $artifact" >&2
+              exit 1
+            fi
+            manifest_dir="$(dirname "$manifest")"
+            manifest_name="$(basename "$manifest")"
+            echo "Checking: $manifest"
+            (cd "$manifest_dir" && sha256sum -c "$manifest_name")
+          done
+
+          find golden-assets -type f ! -name 'SHA256SUMS*' -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > golden-assets/SHA256SUMS-Golden.txt
+
+      - name: Upload golden build bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Packizard-Builder-Golden-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 30
+          path: golden-assets
+
   release:
     name: Publish tagged release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, linux, macos]
+    needs: golden
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      actions: read
     steps:
-      - name: Download all build artifacts
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require tag commit to be on main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "Release tags must point to a commit already promoted to main" >&2
+            exit 1
+          }
+      - name: Download golden build bundle
         uses: actions/download-artifact@v4
         with:
+          name: Packizard-Builder-Golden-${{ github.sha }}
           path: release-assets
-          merge-multiple: true
-      - name: Build combined checksum manifest
-        working-directory: release-assets
+      - name: Flatten release assets
+        shell: bash
         run: |
-          find . -maxdepth 1 -type f ! -name 'SHA256SUMS-*' -print0 \
-            | sort -z \
-            | xargs -0 sha256sum > SHA256SUMS.txt
+          set -euo pipefail
+          mkdir publish-assets
+          find release-assets -type f ! -name 'SHA256SUMS-Golden.txt' -exec cp {} publish-assets/ \;
+          cd publish-assets
+          find . -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
       - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -244,4 +338,4 @@ jobs:
           if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             gh release create "${GITHUB_REF_NAME}" --title "Packizard Builder ${GITHUB_REF_NAME}" --generate-notes
           fi
-          gh release upload "${GITHUB_REF_NAME}" release-assets/* --clobber
+          gh release upload "${GITHUB_REF_NAME}" publish-assets/* --clobber

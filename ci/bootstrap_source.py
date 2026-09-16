@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 UPSTREAM_URL = "https://github.com/Nazky/Lazy_AMPR.git"
@@ -21,45 +22,112 @@ def run(*args: str, cwd: Path | None = None) -> None:
     subprocess.run(args, cwd=cwd, check=True)
 
 
+def _patch_macos_worker_specs(output: Path) -> None:
+    """Convert macOS helper workers to one-file executables.
+
+    Keeping PyInstaller onedir worker trees inside the main .app creates nested
+    Python runtime directories that `codesign --deep` can misclassify as bundle
+    boundaries. The application only needs the helper executables, so macOS
+    builds freeze each helper as one file and retain the same runtime lookup
+    layout (workers/<tool>/<tool>).
+    """
+    if sys.platform != "darwin":
+        return
+
+    for spec_name, executable_name in (
+        ("ampr_pack.spec", "ampr_pack"),
+        ("ampr_pack_profile.spec", "ampr_pack_profile"),
+    ):
+        spec_path = output / spec_name
+        if not spec_path.is_file():
+            raise RuntimeError(f"Missing macOS worker spec: {spec_path}")
+
+        text = spec_path.read_text(encoding="utf-8")
+        old_exe = (
+            f'exe = EXE(pyz, a.scripts, [], exclude_binaries=True, '
+            f'name="{executable_name}", console=True)'
+        )
+        new_exe = (
+            f'exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], '
+            f'name="{executable_name}", console=True)'
+        )
+        old_collect = f'coll = COLLECT(exe, a.binaries, a.datas, name="{executable_name}")'
+
+        if old_exe not in text or old_collect not in text:
+            raise RuntimeError(f"Unexpected PyInstaller worker spec layout: {spec_path}")
+
+        text = text.replace(old_exe, new_exe, 1)
+        text = text.replace(old_collect + "\n", "", 1)
+        spec_path.write_text(text, encoding="utf-8", newline="\n")
+
+
 def _patch_packaging_scripts(output: Path) -> None:
-    """Apply small host-specific packaging fixes after the overlay is restored."""
+    """Apply deterministic host-specific packaging fixes after restoring the overlay."""
     macos_script = output / "build_macos.sh"
     if macos_script.is_file():
         text = macos_script.read_text(encoding="utf-8")
         # BSD/macOS chmod does not accept GNU's explicit `--` marker.
         text = text.replace("chmod +x --", "chmod +x")
-        # PyInstaller's collected worker trees contain Python *.dist-info
-        # directories. codesign may misclassify some of those directories as
-        # nested bundles when the workers are copied into the main .app. They
-        # are packaging metadata and are not needed at runtime, so remove them
-        # before the final bundle is sealed.
-        cleanup = "find \"$app/Contents/MacOS/workers\" -type d \\\( -name '*.dist-info' -o -name '*.egg-info' \\\) -prune -exec rm -rf {} +\n"
-        verify = 'codesign --verify --deep --strict "$app"\n'
-        if cleanup not in text:
-            if verify in text:
-                text = text.replace(verify, cleanup + verify, 1)
-            elif 'ditto -c -k' in text:
-                text = text.replace('ditto -c -k', cleanup + 'ditto -c -k', 1)
-        # A second recursive --deep sign is fragile around copied Python worker
-        # trees. CI performs a normal ad-hoc seal immediately before verify.
-        text = text.replace('codesign --force --deep --sign - "$app"\n', "")
-        macos_script.write_text(text, encoding="utf-8", newline="\n")
+
+        # Preserve the worker lookup contract while embedding one-file workers.
+        old_worker_copy = "\n".join(
+            [
+                'mkdir -p -- "$macos_dir/workers"',
+                'cp -a -- "$dist/ampr_pack" "$macos_dir/workers/"',
+                'cp -a -- "$dist/ampr_pack_profile" "$macos_dir/workers/"',
+            ]
+        )
+        new_worker_copy = "\n".join(
+            [
+                'mkdir -p -- "$macos_dir/workers/ampr_pack" "$macos_dir/workers/ampr_pack_profile"',
+                'cp -a -- "$dist/ampr_pack" "$macos_dir/workers/ampr_pack/ampr_pack"',
+                'cp -a -- "$dist/ampr_pack_profile" "$macos_dir/workers/ampr_pack_profile/ampr_pack_profile"',
+            ]
+        )
+        if old_worker_copy not in text and new_worker_copy not in text:
+            raise RuntimeError("Unexpected macOS worker copy block")
+        text = text.replace(old_worker_copy, new_worker_copy, 1)
+
+        lines = text.splitlines()
+        lines = [
+            line
+            for line in lines
+            if "codesign --force" not in line
+            and "codesign --verify" not in line
+            and 'find "$app/Contents/MacOS/workers" -type d' not in line
+        ]
+        try:
+            xattr_idx = next(i for i, line in enumerate(lines) if 'xattr -cr "$app"' in line)
+        except StopIteration as exc:
+            raise RuntimeError("macOS xattr/signing marker not found") from exc
+
+        indent = lines[xattr_idx][:-len(lines[xattr_idx].lstrip())]
+        signing_block = [
+            indent + 'codesign --force --sign - "$macos_dir/workers/ampr_pack/ampr_pack"',
+            indent
+            + 'codesign --force --sign - "$macos_dir/workers/ampr_pack_profile/ampr_pack_profile"',
+            indent + 'codesign --force --sign - "$app"',
+            indent + 'codesign --verify --deep --strict "$app"',
+        ]
+        lines[xattr_idx + 1 : xattr_idx + 1] = signing_block
+        macos_script.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 
     linux_script = output / "build_linux.sh"
     if linux_script.is_file():
-        text = linux_script.read_text(encoding="utf-8")
-        # appimagetool currently treats AppStream warnings as fatal. The
-        # AppStream file is optional for the AppImage format, so omit it from
-        # CI packages rather than failing a successfully frozen application on
-        # URL/repository visibility warnings from a private GitHub repository.
-        marker = 'if [[ -x "$appimagetool" ]]; then\n'
-        if marker in text and 'rm -f -- "$appdir/usr/share/metainfo/packizard-builder.appdata.xml"' not in text:
-            text = text.replace(
-                marker,
-                marker + '    rm -f -- "$appdir/usr/share/metainfo/packizard-builder.appdata.xml"\n',
-                1,
-            )
-        linux_script.write_text(text, encoding="utf-8", newline="\n")
+        lines = linux_script.read_text(encoding="utf-8").splitlines()
+        cleanup = 'rm -rf -- "$appdir/usr/share/metainfo"'
+        if not any(cleanup in line for line in lines):
+            try:
+                appimage_idx = next(
+                    i
+                    for i, line in enumerate(lines)
+                    if "appimage-extract-and-run" in line and "$appimagetool" in line
+                )
+            except StopIteration as exc:
+                raise RuntimeError("appimagetool invocation not found") from exc
+            indent = lines[appimage_idx][:-len(lines[appimage_idx].lstrip())]
+            lines.insert(appimage_idx, indent + cleanup)
+        linux_script.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 
 
 def main() -> int:
@@ -119,6 +187,7 @@ def main() -> int:
         if temporary_patch is not None:
             temporary_patch.unlink(missing_ok=True)
 
+    _patch_macos_worker_specs(output)
     _patch_packaging_scripts(output)
 
     branding_destination = output / "resources" / "branding"

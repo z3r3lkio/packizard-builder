@@ -1,21 +1,32 @@
 # Packizard Builder
 
-Packizard Builder is a PySide6 desktop application based on the uploaded Lazy_AMPR workflow, reworked with Packizard branding and an integrated PS5 debug PKG builder.
+Packizard Builder is a PySide6 desktop front end for the AMPR workflow plus an integration point for the **PPR-PKG Builder / LibProsperoPkg.Gui** application shown in the project reference image.
 
-## Integrations
+## PKG conversion
 
-- Drakmor `ampr_emu` workflow for AMPR/LZ4 packing and extraction.
-- SvenGDK `LibProsperoPKG` v2.5 native ABI for prepared-folder PKG building (`lpp_build_package_ex`) and decrypted-backup to debug fPKG conversion (`lpp_convert_backup`).
-- Packizard artwork supplied by the project owner.
+PKG creation is delegated exclusively to the external PPR-PKG Builder selected by the user. Packizard no longer calls `LibProsperoPkg` directly through ctypes and has no alternate PKG-builder fallback.
 
-The native PKG binaries are not committed. `scripts/fetch_pkg_engine.py` downloads the official v2.5 release for the current platform and verifies its pinned SHA-256 before extraction.
+Workflow:
 
-Supported engine targets: Windows x64/ARM64, Linux x64/ARM64 and macOS ARM64.
+1. Select your copy of `LibProsperoPkg.Gui.exe` / PPR-PKG Builder (the requested reference is `LibProsperoPKG v0.6.7 — package tool`, © Drakmor & SvenGDK).
+2. Select a source folder or `.gp5` project in Packizard.
+3. Packizard reads `param.json` only for a metadata preview, copies the source path to the clipboard and opens PPR-PKG Builder.
+4. Configure DRM, SDK, image mode, PFS, Kraken, PlayGo, `libScePubTools.dll` and the remaining options in PPR-PKG Builder itself, then press **Build PKG** there.
 
-## Upstream
+No undocumented command-line flags are sent to the external application. Its executable is not redistributed by this repository. You can select it from the UI or set:
 
-- https://github.com/drakmor/ampr_emu
-- https://github.com/SvenGDK/LibProsperoPKG
-- https://github.com/SvenGDK/LibProsperoPKG/releases/tag/v2.5
+```text
+PACKIZARD_PPR_PKG=C:\path\to\LibProsperoPkg.Gui.exe
+```
 
-See `THIRD_PARTY_NOTICES.md` before redistributing bundled binaries.
+Packizard also scans `tools/ppr_pkg_builder/` for the external application.
+
+## Base and upstream references
+
+The source snapshot is derived from the user-supplied Lazy_AMPR 0.0.1 project and keeps its AMPR workflow.
+
+- Drakmor / `ampr_emu`: https://github.com/drakmor/ampr_emu
+- Drakmor / `ppr-patch`: https://github.com/drakmor/ppr-patch
+- SvenGDK / `LibProsperoPKG`: https://github.com/SvenGDK/LibProsperoPKG
+
+The exact PPR-PKG Builder binary is external to this repository and is not redistributed by Packizard Builder.

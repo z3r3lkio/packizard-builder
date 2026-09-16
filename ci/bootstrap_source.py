@@ -28,9 +28,20 @@ def _patch_packaging_scripts(output: Path) -> None:
         text = macos_script.read_text(encoding="utf-8")
         # BSD/macOS chmod does not accept GNU's explicit `--` marker.
         text = text.replace("chmod +x --", "chmod +x")
-        # PyInstaller already gives the generated bundle an ad-hoc signature. A
-        # second recursive `codesign --deep` tries to treat Python dist-info
-        # directories as nested bundles and fails. Keep PyInstaller's signature.
+        # PyInstaller's collected worker trees contain Python *.dist-info
+        # directories. codesign may misclassify some of those directories as
+        # nested bundles when the workers are copied into the main .app. They
+        # are packaging metadata and are not needed at runtime, so remove them
+        # before the final bundle is sealed.
+        cleanup = "find \"$app/Contents/MacOS/workers\" -type d \\\( -name '*.dist-info' -o -name '*.egg-info' \\\) -prune -exec rm -rf {} +\n"
+        verify = 'codesign --verify --deep --strict "$app"\n'
+        if cleanup not in text:
+            if verify in text:
+                text = text.replace(verify, cleanup + verify, 1)
+            elif 'ditto -c -k' in text:
+                text = text.replace('ditto -c -k', cleanup + 'ditto -c -k', 1)
+        # A second recursive --deep sign is fragile around copied Python worker
+        # trees. CI performs a normal ad-hoc seal immediately before verify.
         text = text.replace('codesign --force --deep --sign - "$app"\n', "")
         macos_script.write_text(text, encoding="utf-8", newline="\n")
 

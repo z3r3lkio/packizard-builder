@@ -26,22 +26,28 @@ def _patch_packaging_scripts(output: Path) -> None:
     macos_script = output / "build_macos.sh"
     if macos_script.is_file():
         text = macos_script.read_text(encoding="utf-8")
-        # GNU chmod accepts an explicit end-of-options marker; BSD chmod on macOS
-        # treats it as a path. Keep the command portable on both implementations.
-        text = text.replace("chmod +x -- ", "chmod +x ")
+        # BSD/macOS chmod does not accept GNU's explicit `--` marker.
+        text = text.replace("chmod +x --", "chmod +x")
+        # PyInstaller already gives the generated bundle an ad-hoc signature. A
+        # second recursive `codesign --deep` tries to treat Python dist-info
+        # directories as nested bundles and fails. Keep PyInstaller's signature.
+        text = text.replace('codesign --force --deep --sign - "$app"\n', "")
         macos_script.write_text(text, encoding="utf-8", newline="\n")
 
     linux_script = output / "build_linux.sh"
     if linux_script.is_file():
         text = linux_script.read_text(encoding="utf-8")
-        # appimagetool performs AppStream validation when metadata is present.
-        # Supply a reverse-DNS component ID and a metadata license so validation
-        # does not abort an otherwise successful binary build.
-        text = text.replace(
-            "  <id>packizard-builder</id>\n",
-            "  <id>io.github.z3r3lkio.packizard-builder</id>\n"
-            "  <metadata_license>CC0-1.0</metadata_license>\n",
-        )
+        # appimagetool currently treats AppStream warnings as fatal. The
+        # AppStream file is optional for the AppImage format, so omit it from
+        # CI packages rather than failing a successfully frozen application on
+        # URL/repository visibility warnings from a private GitHub repository.
+        marker = 'if [[ -x "$appimagetool" ]]; then\n'
+        if marker in text and 'rm -f -- "$appdir/usr/share/metainfo/packizard-builder.appdata.xml"' not in text:
+            text = text.replace(
+                marker,
+                marker + '    rm -f -- "$appdir/usr/share/metainfo/packizard-builder.appdata.xml"\n',
+                1,
+            )
         linux_script.write_text(text, encoding="utf-8", newline="\n")
 
 

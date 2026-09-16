@@ -22,44 +22,62 @@ def run(*args: str, cwd: Path | None = None) -> None:
 
 
 def _patch_packaging_scripts(output: Path) -> None:
-    """Apply small host-specific packaging fixes after the overlay is restored."""
+    """Apply deterministic host-specific packaging fixes after restoring the overlay."""
     macos_script = output / "build_macos.sh"
     if macos_script.is_file():
-        text = macos_script.read_text(encoding="utf-8")
+        lines = macos_script.read_text(encoding="utf-8").splitlines()
+
         # BSD/macOS chmod does not accept GNU's explicit `--` marker.
-        text = text.replace("chmod +x --", "chmod +x")
-        # PyInstaller's collected worker trees contain Python *.dist-info
-        # directories. codesign may misclassify some of those directories as
-        # nested bundles when the workers are copied into the main .app. They
-        # are packaging metadata and are not needed at runtime, so remove them
-        # before the final bundle is sealed.
-        cleanup = "find \"$app/Contents/MacOS/workers\" -type d \\\( -name '*.dist-info' -o -name '*.egg-info' \\\) -prune -exec rm -rf {} +\n"
-        verify = 'codesign --verify --deep --strict "$app"\n'
-        if cleanup not in text:
-            if verify in text:
-                text = text.replace(verify, cleanup + verify, 1)
-            elif 'ditto -c -k' in text:
-                text = text.replace('ditto -c -k', cleanup + 'ditto -c -k', 1)
-        # A second recursive --deep sign is fragile around copied Python worker
-        # trees. CI performs a normal ad-hoc seal immediately before verify.
-        text = text.replace('codesign --force --deep --sign - "$app"\n', "")
-        macos_script.write_text(text, encoding="utf-8", newline="\n")
+        lines = [line.replace("chmod +x --", "chmod +x") for line in lines]
+
+        # Workers are copied into the already-created PyInstaller app. Their
+        # package metadata can look like nested bundles to codesign, so remove
+        # metadata that is irrelevant at runtime and re-seal the final app only
+        # after all workers have been embedded.
+        lines = [
+            line
+            for line in lines
+            if 'codesign --force --deep --sign - "$app"' not in line
+            and 'codesign --force --sign - "$app"' not in line
+            and 'find "$app/Contents/MacOS/workers" -type d' not in line
+        ]
+        try:
+            verify_idx = next(
+                i
+                for i, line in enumerate(lines)
+                if 'codesign --verify' in line and '"$app"' in line
+            )
+        except StopIteration:
+            try:
+                verify_idx = next(i for i, line in enumerate(lines) if "ditto -c -k" in line)
+            except StopIteration as exc:
+                raise RuntimeError("macOS signing/packaging marker not found") from exc
+
+        indent = lines[verify_idx][:-len(lines[verify_idx].lstrip())]
+        signing_block = [
+            indent
+            + 'find "$app/Contents/MacOS/workers" -type d \\( -name \'*.dist-info\' -o -name \'*.egg-info\' \\) -prune -exec rm -rf {} +',
+            indent + 'codesign --force --deep --sign - "$app"',
+        ]
+        lines[verify_idx:verify_idx] = signing_block
+        macos_script.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 
     linux_script = output / "build_linux.sh"
     if linux_script.is_file():
-        text = linux_script.read_text(encoding="utf-8")
-        # appimagetool currently treats AppStream warnings as fatal. The
-        # AppStream file is optional for the AppImage format, so omit it from
-        # CI packages rather than failing a successfully frozen application on
-        # URL/repository visibility warnings from a private GitHub repository.
-        marker = 'if [[ -x "$appimagetool" ]]; then\n'
-        if marker in text and 'rm -f -- "$appdir/usr/share/metainfo/packizard-builder.appdata.xml"' not in text:
-            text = text.replace(
-                marker,
-                marker + '    rm -f -- "$appdir/usr/share/metainfo/packizard-builder.appdata.xml"\n',
-                1,
-            )
-        linux_script.write_text(text, encoding="utf-8", newline="\n")
+        lines = linux_script.read_text(encoding="utf-8").splitlines()
+        cleanup = 'rm -rf -- "$appdir/usr/share/metainfo"'
+        if not any(cleanup in line for line in lines):
+            try:
+                appimage_idx = next(
+                    i
+                    for i, line in enumerate(lines)
+                    if "appimage-extract-and-run" in line and "$appimagetool" in line
+                )
+            except StopIteration as exc:
+                raise RuntimeError("appimagetool invocation not found") from exc
+            indent = lines[appimage_idx][:-len(lines[appimage_idx].lstrip())]
+            lines.insert(appimage_idx, indent + cleanup)
+        linux_script.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 
 
 def main() -> int:

@@ -1,0 +1,191 @@
+name: Package Packizard Builder
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  verify:
+    name: Tests · Linux x64
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          architecture: x64
+      - name: Reconstruct complete source tree
+        run: python ci/bootstrap_source.py --output build-src
+      - name: Install test dependencies
+        working-directory: build-src
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-build.txt
+      - name: Run tests
+        working-directory: build-src
+        run: python -m unittest discover -s tests -v
+      - name: Compile Python sources
+        working-directory: build-src
+        run: python -m compileall -q .
+
+  windows:
+    name: Windows · ${{ matrix.arch }}
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025
+            python_arch: x64
+          - arch: arm64
+            runner: windows-11-arm
+            python_arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          architecture: ${{ matrix.python_arch }}
+      - name: Reconstruct complete source tree
+        run: python ci/bootstrap_source.py --output build-src
+      - name: Optionally stage PPR-PKG Builder
+        if: ${{ vars.FPKG_GUI_ARCHIVE_URL != '' && vars.FPKG_GUI_ARCHIVE_SHA256 != '' }}
+        shell: pwsh
+        run: |
+          python build-src/scripts/stage_fpkg_gui.py `
+            --url "${{ vars.FPKG_GUI_ARCHIVE_URL }}" `
+            --sha256 "${{ vars.FPKG_GUI_ARCHIVE_SHA256 }}" `
+            --destination "build-src/tools/ppr_pkg_builder"
+      - name: Create build environment
+        shell: pwsh
+        working-directory: build-src
+        run: |
+          python -m venv .venv312
+          .\.venv312\Scripts\python -m pip install --upgrade pip
+          .\.venv312\Scripts\python -m pip install -r requirements-build.txt
+      - name: Build Windows package
+        shell: pwsh
+        working-directory: build-src
+        run: .\build_windows.ps1 -Architecture "${{ matrix.arch }}"
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Packizard-Builder-Windows-${{ matrix.arch }}
+          if-no-files-found: error
+          path: |
+            release/*-windows-${{ matrix.arch }}/Packizard-Builder-*-Windows-${{ matrix.arch }}.zip
+            release/*-windows-${{ matrix.arch }}/SHA256SUMS-Windows-${{ matrix.arch }}.txt
+
+  linux:
+    name: Linux · ${{ matrix.arch }}
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+            python_arch: x64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            python_arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          architecture: ${{ matrix.python_arch }}
+      - name: Reconstruct complete source tree
+        run: python ci/bootstrap_source.py --output build-src
+      - name: Build Linux package
+        working-directory: build-src
+        env:
+          PYTHON: python3
+          PACKIZARD_TARGET_ARCH: ${{ matrix.arch }}
+        run: ./build_linux.sh
+      - name: Upload Linux packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: Packizard-Builder-Linux-${{ matrix.arch }}
+          if-no-files-found: error
+          path: |
+            release/*-linux-${{ matrix.arch }}/Packizard-Builder-*-Linux-${{ matrix.arch }}.AppImage
+            release/*-linux-${{ matrix.arch }}/Packizard-Builder-*-Linux-${{ matrix.arch }}.tar.gz
+            release/*-linux-${{ matrix.arch }}/SHA256SUMS-Linux-${{ matrix.arch }}.txt
+
+  macos:
+    name: macOS · ${{ matrix.arch }}
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: macos-15-intel
+            python_arch: x64
+          - arch: arm64
+            runner: macos-15
+            python_arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          architecture: ${{ matrix.python_arch }}
+      - name: Reconstruct complete source tree
+        run: python ci/bootstrap_source.py --output build-src
+      - name: Build macOS package
+        working-directory: build-src
+        env:
+          PYTHON: python3
+          PACKIZARD_TARGET_ARCH: ${{ matrix.arch }}
+        run: ./build_macos.sh
+      - name: Upload macOS package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Packizard-Builder-macOS-${{ matrix.arch }}
+          if-no-files-found: error
+          path: |
+            release/*-macos-${{ matrix.arch }}/Packizard-Builder-*-macOS-${{ matrix.arch }}.zip
+            release/*-macos-${{ matrix.arch }}/SHA256SUMS-macOS-${{ matrix.arch }}.txt
+
+  release:
+    name: Publish tagged release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, linux, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Build combined checksum manifest
+        working-directory: release-assets
+        run: |
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS-*' -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > SHA256SUMS.txt
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release create "${GITHUB_REF_NAME}" --title "Packizard Builder ${GITHUB_REF_NAME}" --generate-notes
+          fi
+          gh release upload "${GITHUB_REF_NAME}" release-assets/* --clobber

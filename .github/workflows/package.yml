@@ -188,14 +188,16 @@ jobs:
           p = Path('build_macos.sh')
           lines = p.read_text(encoding='utf-8').splitlines()
           lines = [line.replace('chmod +x --', 'chmod +x') for line in lines]
-          lines = [line.replace('codesign --force --deep --sign - "$app"', 'codesign --force --sign - "$app"') for line in lines]
-          plain = 'codesign --force --sign - "$app"'
-          if not any(plain in line for line in lines):
+          lines = [line for line in lines if 'codesign --force --deep --sign - "$app"' not in line and 'codesign --force --sign - "$app"' not in line]
+          sign = 'codesign --force --sign - "$app"'
+          try:
+              verify_idx = next(i for i, line in enumerate(lines) if 'codesign --verify' in line and '"$app"' in line)
+          except StopIteration:
               try:
-                  idx = next(i for i, line in enumerate(lines) if 'ditto -c -k' in line)
+                  verify_idx = next(i for i, line in enumerate(lines) if 'ditto -c -k' in line)
               except StopIteration:
-                  raise SystemExit('macOS ditto packaging command not found')
-              lines.insert(idx, plain)
+                  raise SystemExit('macOS signing/packaging marker not found')
+          lines.insert(verify_idx, sign)
           p.write_text('\n'.join(lines) + '\n', encoding='utf-8', newline='\n')
           PY
           grep -n 'codesign\|chmod +x\|ditto -c -k' build_macos.sh

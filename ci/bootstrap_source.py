@@ -32,14 +32,20 @@ def _output_path() -> Path:
     return Path("build-src").resolve()
 
 
-def _report_pkg_test_fixtures(root: Path) -> None:
-    """Expose only PKG-ID fixture lines while the integrated test is stabilized."""
-    test_file = root / "tests" / "test_pkg_engine.py"
-    if not test_file.is_file():
-        return
-    for number, line in enumerate(test_file.read_text(encoding="utf-8").splitlines(), 1):
-        if "content_id" in line or "contentId" in line:
-            print(f"PKG fixture {number}: {line.strip()}")
+def _report_pkg_wiring(root: Path) -> None:
+    """Expose only the small set of lines needed to stabilize JSON field mapping."""
+    targets = (
+        root / "tests" / "test_pkg_engine.py",
+        root / "core" / "pkg_engine.py",
+        root / "bridge" / "Packizard.PkgBridge" / "Program.cs",
+    )
+    needles = ("content_id", "contentId", "ContentId", "JsonSerializer", "json.dump", "json.dumps", "asdict")
+    for target in targets:
+        if not target.is_file():
+            continue
+        for number, line in enumerate(target.read_text(encoding="utf-8").splitlines(), 1):
+            if any(needle in line for needle in needles):
+                print(f"PKG wiring {target.relative_to(root)}:{number}: {line.strip()}")
 
 
 def main() -> int:
@@ -100,7 +106,7 @@ def main() -> int:
     impl.run = deterministic_run
     impl._write_branding = deterministic_branding
     result = impl.main()
-    _report_pkg_test_fixtures(_output_path())
+    _report_pkg_wiring(_output_path())
     return result
 
 

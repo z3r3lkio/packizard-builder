@@ -4,7 +4,9 @@ param(
     [ValidateSet('x64', 'arm64')]
     [string]$Architecture,
 
-    [switch]$RequireSigning
+    [switch]$RequireSigning,
+
+    [switch]$AllowSelfSignedUat
 )
 
 $ErrorActionPreference = 'Stop'
@@ -46,6 +48,86 @@ function Invoke-SignTool {
     }
 }
 
+function Add-TemporaryUatTrust {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate
+    )
+
+    $addedStores = @()
+    $thumbprint = $Certificate.Thumbprint
+    foreach ($storeName in @('Root', 'TrustedPublisher')) {
+        $store = [System.Security.Cryptography.X509Certificates.X509Store]::new(
+            $storeName,
+            [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
+        )
+        try {
+            $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+            $existing = $store.Certificates.Find(
+                [System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
+                $thumbprint,
+                $false
+            )
+            if ($existing.Count -eq 0) {
+                $publicCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($Certificate.RawData)
+                $store.Add($publicCertificate)
+                $addedStores += $storeName
+                Write-Host "Temporarily trusted Packizard UAT certificate in CurrentUser\\$storeName ($thumbprint)"
+            }
+        }
+        finally {
+            $store.Close()
+        }
+    }
+    return ,$addedStores
+}
+
+function Remove-TemporaryUatTrust {
+    param(
+        [Parameter(Mandatory = $true)][string]$Thumbprint,
+        [Parameter(Mandatory = $true)][string[]]$StoreNames
+    )
+
+    foreach ($storeName in $StoreNames) {
+        $store = [System.Security.Cryptography.X509Certificates.X509Store]::new(
+            $storeName,
+            [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
+        )
+        try {
+            $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+            $matches = $store.Certificates.Find(
+                [System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
+                $Thumbprint,
+                $false
+            )
+            foreach ($match in $matches) {
+                $store.Remove($match)
+            }
+        }
+        finally {
+            $store.Close()
+        }
+    }
+}
+
+function Assert-ExpectedAuthenticodeSigner {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ExpectedThumbprint
+    )
+
+    $signature = Get-AuthenticodeSignature -FilePath $Path
+    if (-not $signature.SignerCertificate) {
+        throw "No Authenticode signer certificate found on $Path"
+    }
+    if ($signature.SignerCertificate.Thumbprint -ne $ExpectedThumbprint) {
+        throw "Unexpected Authenticode signer on $Path. Expected $ExpectedThumbprint, got $($signature.SignerCertificate.Thumbprint)."
+    }
+    if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+        throw "Authenticode signature status for $Path is $($signature.Status): $($signature.StatusMessage)"
+    }
+}
+
 $pfxBase64 = $env:PACKIZARD_CODESIGN_PFX_B64
 $pfxPassword = $env:PACKIZARD_CODESIGN_PFX_PASSWORD
 
@@ -75,9 +157,37 @@ $tempRoot = Join-Path $env:RUNNER_TEMP "packizard-sign-$Architecture-$([guid]::N
 $extractRoot = Join-Path $tempRoot 'payload'
 $pfxPath = Join-Path $tempRoot 'packizard-codesign.pfx'
 New-Item -ItemType Directory -Path $extractRoot -Force | Out-Null
+$temporaryTrustStores = @()
+$signingCertificate = $null
 
 try {
     [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($pfxBase64))
+
+    $keyFlags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
+    $signingCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+        $pfxPath,
+        $pfxPassword,
+        $keyFlags
+    )
+    if (-not $signingCertificate.HasPrivateKey) {
+        throw 'Configured PFX does not contain a private key.'
+    }
+
+    $expectedThumbprint = $signingCertificate.Thumbprint
+    $isSelfSigned = $signingCertificate.Subject -eq $signingCertificate.Issuer
+    Write-Host "Authenticode certificate subject: $($signingCertificate.Subject)"
+    Write-Host "Authenticode certificate thumbprint: $expectedThumbprint"
+
+    if ($isSelfSigned) {
+        if ($RequireSigning) {
+            throw 'Tagged releases require a publicly trusted Authenticode certificate; the configured Packizard certificate is self-signed.'
+        }
+        if (-not $AllowSelfSignedUat) {
+            throw 'The configured Packizard certificate is self-signed and this build is not allowed to use UAT self-signed trust.'
+        }
+        $temporaryTrustStores = @(Add-TemporaryUatTrust -Certificate $signingCertificate)
+    }
+
     Expand-Archive -LiteralPath $zip.FullName -DestinationPath $extractRoot -Force
 
     $executables = @(Get-ChildItem -Path $extractRoot -Recurse -File -Filter '*.exe')
@@ -116,6 +226,7 @@ try {
             $exe.FullName
         )
         Invoke-SignTool -SignTool $signTool -Arguments @('verify', '/pa', '/all', '/v', $exe.FullName)
+        Assert-ExpectedAuthenticodeSigner -Path $exe.FullName -ExpectedThumbprint $expectedThumbprint
     }
 
     Remove-Item -LiteralPath $zip.FullName -Force
@@ -128,6 +239,12 @@ try {
     Write-Host "SHA-256 $hash"
 }
 finally {
+    if ($signingCertificate -and $temporaryTrustStores.Count -gt 0) {
+        Remove-TemporaryUatTrust -Thumbprint $signingCertificate.Thumbprint -StoreNames $temporaryTrustStores
+    }
+    if ($signingCertificate) {
+        $signingCertificate.Dispose()
+    }
     if (Test-Path $tempRoot) {
         Remove-Item -LiteralPath $tempRoot -Recurse -Force
     }

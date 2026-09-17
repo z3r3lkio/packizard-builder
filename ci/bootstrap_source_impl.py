@@ -133,12 +133,15 @@ def _write_branding(overlay: Path, output: Path) -> None:
     logo = overlay / "ci" / "packizard_logo.b64"
     if not logo.is_file():
         raise SystemExit("Missing Packizard branding artwork")
-    # GitHub/text transports may wrap Base64 at arbitrary line boundaries. Normalize
-    # ASCII whitespace first, then keep strict validation for all remaining bytes.
+    # The historical transport file may contain separators introduced by previous
+    # GitHub/content tooling. Decode it permissively, then validate the actual binary
+    # payload instead of accepting arbitrary output.
     encoded = "".join(logo.read_text(encoding="ascii").split())
-    artwork = base64.b64decode(encoded, validate=True)
+    artwork = base64.b64decode(encoded, validate=False)
     if not artwork.startswith(b"\x89PNG\r\n\x1a\n"):
         raise RuntimeError("Packizard branding artwork is not a valid PNG payload")
+    if b"IEND" not in artwork[-64:]:
+        raise RuntimeError("Packizard branding PNG is incomplete")
     destination = output / "resources" / "branding"
     destination.mkdir(parents=True, exist_ok=True)
     (destination / "packizard_icon.png").write_bytes(artwork)

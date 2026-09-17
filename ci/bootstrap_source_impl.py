@@ -7,6 +7,7 @@ import base64
 import json
 import lzma
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -130,23 +131,33 @@ def _apply_engine_pin(overlay: Path, output: Path) -> None:
 
 
 def _write_branding(overlay: Path, output: Path) -> None:
-    logo = overlay / "ci" / "packizard_logo.b64"
-    if not logo.is_file():
-        raise SystemExit("Missing Packizard branding artwork")
-    # The historical transport file may contain separators and may have lost final
-    # Base64 padding through previous content tooling. Normalize and repair only the
-    # transport encoding; the decoded PNG is still structurally checked below.
-    encoded = "".join(logo.read_text(encoding="ascii").split())
+    ci_dir = overlay / "ci"
+    parts = sorted(ci_dir.glob("packizard_logo.b64.part-*"))
+    if parts:
+        encoded = "".join("".join(part.read_text(encoding="ascii").split()) for part in parts)
+    else:
+        logo = ci_dir / "packizard_logo.b64"
+        if not logo.is_file():
+            raise SystemExit("Missing Packizard branding artwork")
+        encoded = "".join(logo.read_text(encoding="ascii").split())
+
     encoded += "=" * (-len(encoded) % 4)
     artwork = base64.b64decode(encoded, validate=False)
-    if not artwork.startswith(b"\x89PNG\r\n\x1a\n"):
+    signature = b"\x89PNG\r\n\x1a\n"
+    if len(artwork) < 24 or not artwork.startswith(signature):
         raise RuntimeError("Packizard branding artwork is not a valid PNG payload")
+    width, height = struct.unpack(">II", artwork[16:24])
+    if width != height or width < 256:
+        raise RuntimeError(f"Packizard branding must be square and at least 256x256; got {width}x{height}")
     if b"IEND" not in artwork[-64:]:
         raise RuntimeError("Packizard branding PNG is incomplete")
+
     destination = output / "resources" / "branding"
     destination.mkdir(parents=True, exist_ok=True)
     (destination / "packizard_icon.png").write_bytes(artwork)
     (destination / "packizard_sidebar.png").write_bytes(artwork)
+    fallback_marker = destination / ".ci_branding_fallback"
+    fallback_marker.unlink(missing_ok=True)
 
 
 def main() -> int:

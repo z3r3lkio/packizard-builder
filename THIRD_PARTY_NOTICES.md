@@ -1,23 +1,31 @@
 # Third-party notices
 
-Packizard Builder is derived from the user-supplied Lazy_AMPR 0.0.1 source snapshot and retains its upstream credits.
+Packizard Builder is the integration application. It includes or builds against upstream components that retain their own copyright and license terms.
 
-## AMPR tooling
+## Lazy_AMPR / AMPR
 
-`external/ampr_emu` originates from Drakmor's `ampr_emu` project and is distributed under GPL-3.0. Its license and the licenses of bundled dependencies must remain with redistributed builds.
+Packizard is derived from the user-supplied Lazy_AMPR 0.0.1 source baseline and retains the AMPR workflow and associated upstream attribution.
 
+Relevant projects:
+
+- https://github.com/Nazky/Lazy_AMPR
 - https://github.com/drakmor/ampr_emu
 
-## PPR-PKG Builder / LibProsperoPkg.Gui
+`external/ampr_emu/LICENSE` and bundled dependency license files must remain present in redistributed builds.
 
-Packizard launches PPR-PKG Builder as a separate external application. The source repository intentionally does not track the PPR executable or `libScePubTools.dll`.
+## LibProsperoPKG
 
-A local build tree may contain the exact `fpkg-gui-0.6.7.zip` contents supplied by the user under `tools/ppr_pkg_builder/`. That uploaded archive identifies `LibProsperoPkg.Gui` version 0.6.7 and contains Windows x86-64 binaries. No standalone redistribution license was present in the supplied ZIP, so Packizard does not claim redistribution rights for those binaries. They should only be bundled where the operator has the necessary rights.
+Packizard Builder 0.2.0 integrates **LibProsperoPKG v2.6.0** through the first-party `Packizard.PkgBridge` helper.
 
-Relevant public source references:
+- upstream repository: https://github.com/SvenGDK/LibProsperoPKG
+- pinned main snapshot: `v2.6.0`
+- pinned commit: `748eabf1b7d17819528cabf367d8e27109d8fce3`
+- upstream license: **GPL-3.0-or-later**
 
-- https://github.com/drakmor/LibProsperoPKG
-- https://github.com/SvenGDK/LibProsperoPKG
-- https://github.com/drakmor/ppr-patch
+The helper is compiled from source against that pinned upstream revision for each release architecture. Release packages copy the upstream `LICENSE` alongside the application under `licenses/LibProsperoPKG/` (or the corresponding macOS Resources directory).
 
-Packizard does not replace PPR-PKG Builder with a different PKG implementation and does not copy its package-building implementation into Packizard's Python code.
+Packizard does not bundle or launch the standalone PPR-PKG Builder GUI. The current reference GUI version is `0.6.8`; PKG creation is performed through the integrated bridge built from the separately versioned, pinned public LibProsperoPKG source snapshot.
+
+## Acknowledgements
+
+Thanks to Nazky, Deckerr97, Pippo, drakmor, SvenGDK and the contributors to the upstream projects whose work and research underpin these workflows.

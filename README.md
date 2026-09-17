@@ -1,95 +1,107 @@
 # Packizard Builder
 
-Packizard Builder is a PySide6 desktop front end for two related PS5 workflows:
+Packizard Builder is an integrated desktop workflow for PS5 application backups and homebrew packaging. It combines the AMPR/LZ4 compression flow inherited from Lazy_AMPR with an in-app PKG build flow powered by **LibProsperoPKG**.
 
-- build/extract AMPR LZ4 asset packs using Drakmor's `ampr_emu` tooling;
-- prepare the source path and open the **official PPR-PKG Builder / LibProsperoPkg.Gui** application for PKG creation.
+## What changed in 0.2.0
 
-The interface is derived from the uploaded Lazy_AMPR 0.0.1 source and reworked around the Packizard branding. The supplied Packizard artwork is used in the sidebar and as the application icon.
+- **PKG creation is integrated.** Packizard no longer launches `LibProsperoPkg.Gui` / PPR-PKG Builder as a second application.
+- **Compress → PKG in one job.** The Compress page has a **Create PKG after LZ4 compression** option. When enabled, the successful AMPR output becomes the source for the PKG stage automatically.
+- **Build PKG remains available.** It is now the manual/advanced UI for the same integrated engine, not an external-program launcher.
+- **Packizard.PkgBridge.** A small first-party .NET helper is bundled with every release and calls `ProsperoPackageBuilder.Build(...)` in-process inside the helper. Python/PySide communicates with the helper over a structured JSON event stream.
+- **Native builds on six targets.** Windows x64/ARM64, Linux x64/ARM64, macOS Intel x64 and Apple Silicon ARM64 all bundle a bridge built for the same target architecture.
+- **Branding and credits.** The sidebar uses the complete Packizard lizard artwork at higher resolution. The Credits page identifies **Packizard** as the integrator and keeps upstream acknowledgements compact at the bottom.
 
-## PKG workflow
+## Integrated PKG engine
 
-Packizard does **not** build the PKG through a private ctypes bridge and does not silently switch to another FPKG implementation. The `Convert to PKG` page delegates that job to the external PPR-PKG Builder application selected by the user — the Drakmor & SvenGDK tool shown in the project reference image (`LibProsperoPKG v0.6.7 — package tool`).
+The current PPR-PKG Builder reference version is **0.6.8**. Packizard mirrors its documented defaults where the public LibProsperoPKG API exposes the same behavior (notably application DRM `standard`) and verifies finished packages with the upstream structural acceptance validator. The exact 0.6.8 GUI binary is not launched or bundled.
 
-This separation is deliberate:
+Packizard tracks the latest **validated public upstream main snapshot** of:
 
-1. select your copy of `LibProsperoPkg.Gui.exe` / PPR-PKG Builder in Packizard;
-2. select a source folder or `.gp5` project and, optionally, an output directory;
-3. Packizard reads `param.json` only for a metadata preview and opens PPR-PKG Builder;
-4. the source path is copied to the clipboard;
-5. configure DRM, SDK, image mode, PFS, Kraken, PlayGo, `libScePubTools.dll` and the other package options in PPR-PKG Builder itself, then press **Build PKG** there.
+- `SvenGDK/LibProsperoPKG`
+- validated upstream snapshot: **v2.6.0**
+- pinned commit: `748eabf1b7d17819528cabf367d8e27109d8fce3`
 
-No undocumented command-line flags are sent to PPR-PKG Builder. The executable is not tracked in this repository. A local source tree may contain a user-supplied copy under `tools/ppr_pkg_builder/`; Windows builds bundle that staged directory automatically. Configure an external copy from the UI or with:
+The pin is deliberate: a Golden Build must be reproducible. The reference GUI version and the public source version use different version schemes, so Packizard records them separately rather than pretending that `2.6.0` and `0.6.8` are the same release. A scheduled GitHub Actions workflow checks the upstream `main` branch and opens a `feature/libprospero-*` PR against `UAT` whenever its commit changes. The candidate snapshot is only promoted after the complete test/build matrix passes. This keeps Packizard on the newest public upstream code that has passed Packizard UAT without silently changing the package engine underneath an existing Golden Build.
 
-```text
-PACKIZARD_PPR_PKG=C:\path\to\LibProsperoPkg.Gui.exe
-```
+The authoritative pin used by the compact CI repository is `ci/libprospero_pin.json`. The reconstructed full source mirrors it into:
 
-Packizard also looks for the application under `tools/ppr_pkg_builder/`.
+- `bridge/LIBPROSPERO_VERSION`
+- `bridge/LIBPROSPERO_REF`
 
-## What changed from Lazy_AMPR 0.0.1
+The helper project is under `bridge/Packizard.PkgBridge/` and references the pinned upstream source checkout at build time.
 
-- Rebranded the desktop application as **Packizard Builder**.
-- Added the supplied Packizard artwork to the sidebar and application resources.
-- Updated the light/dark palette to a blue/cyan Packizard theme.
-- Renamed the main AMPR entry point from `One Shot` to `Compress` and `Toml list` to `Profiles`.
-- Added a dedicated **Convert to PKG** workflow.
-- Added folder / GP5 selection and metadata preview from `param.json`.
-- Added persistent selection and detection of PPR-PKG Builder.
-- Removed the former direct `LibProsperoPkg` native-ABI package builder so the project cannot accidentally produce a PKG through a different path.
-- Preserved migration of the original Lazy_AMPR settings and TOML profiles.
+## Compress → PKG
 
-## Run from source
+1. Load the game/application folder in **Compress**.
+2. Configure LZ4/AMPR as usual.
+3. Enable **Create PKG after LZ4 compression**.
+4. Review the PKG metadata/options shown underneath the tick.
+5. Start processing.
+6. Packizard completes the AMPR/LZ4 output first. Only after that stage succeeds does it run the integrated PKG engine against the compressed output.
 
-Python 3.12 is the validated target inherited from Lazy_AMPR.
+If compression fails or is cancelled, the PKG stage is not started.
+
+## Build PKG
+
+The dedicated page builds directly from an already prepared source folder and exposes the options provided by the validated LibProsperoPKG snapshot, including package mode, debug/metadata output, application type, DRM metadata override, fake-signing, license-free debug mode, title/content metadata and passcode.
+
+No external GUI is spawned.
+
+## Development build prerequisites
+
+- Python 3.12+
+- dependencies from `requirements-build.txt`
+- .NET 10 SDK
+- Git (to fetch the pinned LibProsperoPKG source for a local bridge build)
+
+Prepare a bridge for the current machine with, for example:
 
 ```bash
-python -m venv .venv
-# Windows: .venv\Scripts\activate
-# Linux/macOS: source .venv/bin/activate
-pip install -r requirements.txt
-python main.py
+python scripts/prepare_pkg_bridge.py --rid linux-x64
 ```
 
-For PKG creation, run Packizard on Windows and select the PPR-PKG Builder executable you intend to use.
+Supported release RIDs are:
 
-## Cross-platform build pipeline
+- `win-x64`
+- `win-arm64`
+- `linux-x64`
+- `linux-arm64`
+- `osx-x64`
+- `osx-arm64`
 
-The GitHub repository is kept as a lightweight overlay. CI reconstructs the complete source from the pinned Lazy_AMPR commit `033a85bf2cbc343ed8da81dcef55faac8ba7628a`, applies the compressed Packizard overlay under `ci/`, and injects the Packizard logo before building. The downloadable source snapshot remains self-contained and does not require that bootstrap step.
+The normal platform build scripts call this step automatically.
 
-`.github/workflows/package.yml` builds six native Packizard artifacts on GitHub-hosted runners:
+## Branch and release policy
 
-| OS | Intel / x64 | ARM64 |
-| --- | --- | --- |
-| Windows | `windows-2025` | `windows-11-arm` |
-| Linux | `ubuntu-24.04` | `ubuntu-24.04-arm` |
-| macOS | `macos-15-intel` | `macos-15` |
+Development follows:
 
-Windows outputs are ZIP archives, Linux outputs are AppImage + `tar.gz`, and macOS outputs are ad-hoc signed `.app` bundles inside ZIP archives. Tagged builds (`v*`) collect all six targets into a GitHub Release with a combined SHA-256 manifest.
+```text
+feature/* -> PR -> UAT -> six-platform Golden Build -> PR -> main
+```
 
-The supplied `fpkg-gui-0.6.7.zip` is a Windows x86-64/.NET 9 application. It cannot become a native Linux or macOS binary merely by repackaging it. Packizard itself is built natively for all six targets; the exact PPR-PKG Builder remains a Windows tool. A Windows ARM64 Packizard build can launch the x64 PPR executable through Windows x64 emulation when the required x64 .NET 9 Desktop runtime is available.
-
-Because the PPR archive includes third-party binaries and no redistribution license was present in the supplied ZIP, the repository keeps `tools/ppr_pkg_builder/` gitignored. For private CI builds that are authorized to redistribute that archive, set repository variables `FPKG_GUI_ARCHIVE_URL` and `FPKG_GUI_ARCHIVE_SHA256`; the workflow verifies the hash before staging it. For the uploaded 0.6.7 archive the SHA-256 is `7e38d255929e00cdc9e9ec80cdaf44da9f038289f85eb06098331b52b6989896`.
+`main` is the release branch. New work starts from `UAT`, is implemented in a `feature/*` branch, and is merged back to `UAT` by PR. A promotion from `UAT` to `main` is only appropriate after the Golden Build job verifies all six platform artifacts and their SHA-256 manifests.
 
 ## Tests
+
+Run:
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-The test suite verifies AMPR behavior, state migration and the PPR-PKG Builder launcher/path resolution. It does not claim to validate a PKG produced by an external application that is not present in the test environment.
+The CI verification job also compiles and probes `Packizard.PkgBridge`, so a LibProsperoPKG API break is detected before the platform matrix is allowed to build release artifacts.
 
-## Upstream references
+## Upstream projects and attribution
 
-- Drakmor, `ampr_emu`: https://github.com/drakmor/ampr_emu
-- Drakmor, `ppr-patch`: https://github.com/drakmor/ppr-patch
-- Drakmor, `LibProsperoPKG`: https://github.com/drakmor/LibProsperoPKG
-- SvenGDK, `LibProsperoPKG` mirror/reference: https://github.com/SvenGDK/LibProsperoPKG
+Packizard is the integrator of this application. It builds on upstream work, including:
 
-The exact PPR-PKG Builder binary is external to this repository and is not redistributed by Packizard Builder.
+- Lazy_AMPR by Nazky and contributors: https://github.com/Nazky/Lazy_AMPR
+- AMPR emulation/tooling by drakmor: https://github.com/drakmor/ampr_emu
+- LibProsperoPKG by SvenGDK: https://github.com/SvenGDK/LibProsperoPKG
+- related PS5 packaging research/tooling by drakmor: https://github.com/drakmor/LibProsperoPKG
 
-## Licensing and attribution
+See `THIRD_PARTY_NOTICES.md` for redistribution and license details.
 
-`external/ampr_emu` is distributed under GPL-3.0. Keep its license and the licenses of all bundled dependencies with redistributed builds. PPR-PKG Builder is launched as a separate external program; Packizard does not copy its implementation into this repository.
+## License notes
 
-The original Lazy_AMPR credits are retained in the application: Nazky, Deckerr97, Pippo and Drakmor. SvenGDK is also credited for the PKG tooling referenced by the requested workflow.
+The bundled AMPR tooling and LibProsperoPKG carry their own upstream licenses. The tracked LibProsperoPKG v2.6.0 snapshot is GPL-3.0-or-later. Release packages preserve its license and this repository ships the Packizard bridge source used to invoke it. Keep all upstream license files and notices with redistributed builds.

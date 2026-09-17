@@ -114,6 +114,28 @@ def _stabilize_generated_packaging(root: Path) -> None:
             print("macOS packaging: signed executable payload verified; bundle container left unsigned")
 
 
+def _insert_windows_icon_preparation(root: Path) -> None:
+    """Insert ICO generation before the first PyInstaller build command."""
+    windows = root / "build_windows.ps1"
+    if not windows.is_file():
+        raise RuntimeError(f"Missing Windows packaging script: {windows}")
+
+    text = windows.read_text(encoding="utf-8")
+    if "scripts\\prepare_windows_icon.py" in text:
+        return
+
+    lines = text.splitlines()
+    insert_at = next((i for i, line in enumerate(lines) if "PyInstaller" in line), None)
+    if insert_at is None:
+        raise RuntimeError("Could not locate any PyInstaller invocation in build_windows.ps1")
+
+    target = lines[insert_at]
+    indent = target[: len(target) - len(target.lstrip())]
+    lines.insert(insert_at, indent + r"& $python scripts\prepare_windows_icon.py")
+    windows.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    print("Windows packaging: inserted Packizard ICO generation before PyInstaller")
+
+
 def main() -> int:
     ci_dir = Path(__file__).resolve().parent
     # Force the verified split payload. The monolithic compatibility copy is
@@ -143,6 +165,20 @@ def main() -> int:
         return original_run(*args, cwd=cwd)
 
     impl.run = deterministic_run
+
+    original_branding_patch = impl._patch_application_branding
+
+    def resilient_branding_patch(overlay: Path, output: Path) -> None:
+        try:
+            original_branding_patch(overlay, output)
+        except RuntimeError as exc:
+            if "Could not find PyInstaller invocation" not in str(exc):
+                raise
+            _insert_windows_icon_preparation(output)
+            original_branding_patch(overlay, output)
+
+    impl._patch_application_branding = resilient_branding_patch
+
     result = impl.main()
     output = _output_path()
     _validate_branding(output)

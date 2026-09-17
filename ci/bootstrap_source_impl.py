@@ -7,6 +7,7 @@ import base64
 import json
 import lzma
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -130,19 +131,27 @@ def _apply_engine_pin(overlay: Path, output: Path) -> None:
 
 
 def _write_branding(overlay: Path, output: Path) -> None:
-    logo = overlay / "ci" / "packizard_logo.b64"
-    if not logo.is_file():
+    ci_dir = overlay / "ci"
+    parts = sorted(ci_dir.glob("packizard_logo.b64.part-*"))
+    monolithic = ci_dir / "packizard_logo.b64"
+    if parts:
+        encoded = "".join("".join(part.read_text(encoding="ascii").split()) for part in parts)
+    elif monolithic.is_file():
+        encoded = "".join(monolithic.read_text(encoding="ascii").split())
+    else:
         raise SystemExit("Missing Packizard branding artwork")
-    # The historical transport file may contain separators and may have lost final
-    # Base64 padding through previous content tooling. Normalize and repair only the
-    # transport encoding; the decoded PNG is still structurally checked below.
-    encoded = "".join(logo.read_text(encoding="ascii").split())
-    encoded += "=" * (-len(encoded) % 4)
-    artwork = base64.b64decode(encoded, validate=False)
+
+    artwork = base64.b64decode(encoded, validate=True)
     if not artwork.startswith(b"\x89PNG\r\n\x1a\n"):
         raise RuntimeError("Packizard branding artwork is not a valid PNG payload")
+    if len(artwork) < 24 or artwork[12:16] != b"IHDR":
+        raise RuntimeError("Packizard branding PNG has no valid IHDR")
+    width, height = struct.unpack(">II", artwork[16:24])
+    if width < 256 or height < 256:
+        raise RuntimeError(f"Packizard branding is too small: {width}x{height}")
     if b"IEND" not in artwork[-64:]:
         raise RuntimeError("Packizard branding PNG is incomplete")
+
     destination = output / "resources" / "branding"
     destination.mkdir(parents=True, exist_ok=True)
     (destination / "packizard_icon.png").write_bytes(artwork)
@@ -178,7 +187,6 @@ def main() -> int:
         if patch.name.startswith("packizard-overlay-"):
             patch.unlink(missing_ok=True)
 
-    # The 0.2 overlay was generated against the already-hardened 0.1.2 tree.
     _patch_macos_worker_specs(output)
     _patch_packaging_scripts(output)
 

@@ -6,6 +6,7 @@ import base64
 import io
 import lzma
 import os
+import struct
 import sys
 import tarfile
 from pathlib import Path
@@ -31,6 +32,29 @@ def _output_path() -> Path:
         if index + 1 < len(args):
             return Path(args[index + 1]).resolve()
     return Path("build-src").resolve()
+
+
+def _validate_branding(root: Path) -> None:
+    branding = root / "resources" / "branding"
+    fallback = branding / ".ci_branding_fallback"
+    if fallback.exists():
+        raise RuntimeError("CI branding fallback marker is present; refusing to package placeholder artwork")
+
+    signature = b"\x89PNG\r\n\x1a\n"
+    for name in ("packizard_icon.png", "packizard_sidebar.png"):
+        path = branding / name
+        if not path.is_file():
+            raise RuntimeError(f"Missing Packizard branding file: {path}")
+        payload = path.read_bytes()
+        if len(payload) < 24 or not payload.startswith(signature):
+            raise RuntimeError(f"Invalid PNG branding file: {path}")
+        width, height = struct.unpack(">II", payload[16:24])
+        if width != height or width < 256:
+            raise RuntimeError(f"Branding must be square and at least 256x256: {path} is {width}x{height}")
+        if b"IEND" not in payload[-64:]:
+            raise RuntimeError(f"Incomplete PNG branding file: {path}")
+
+    print("Validated Packizard branding: complete square artwork, no fallback placeholder")
 
 
 def _stabilize_generated_packaging(root: Path) -> None:
@@ -101,7 +125,6 @@ def main() -> int:
     import bootstrap_source_impl as impl
 
     original_run = impl.run
-    original_branding = impl._write_branding
     restored = False
 
     def deterministic_run(*args: str, cwd=None) -> None:
@@ -119,29 +142,11 @@ def main() -> int:
             restored = True
         return original_run(*args, cwd=cwd)
 
-    def deterministic_branding(overlay: Path, output: Path) -> None:
-        try:
-            original_branding(overlay, output)
-            return
-        except Exception as exc:  # noqa: BLE001 - engine CI must remain diagnosable
-            print(f"WARNING: using CI-only branding fallback: {exc}")
-
-        fallback = base64.b64decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
-        )
-        destination = output / "resources" / "branding"
-        destination.mkdir(parents=True, exist_ok=True)
-        (destination / "packizard_icon.png").write_bytes(fallback)
-        (destination / "packizard_sidebar.png").write_bytes(fallback)
-        (destination / ".ci_branding_fallback").write_text(
-            "CI-only fallback; replace with verified Packizard artwork before UAT/golden promotion.\n",
-            encoding="utf-8",
-        )
-
     impl.run = deterministic_run
-    impl._write_branding = deterministic_branding
     result = impl.main()
-    _stabilize_generated_packaging(_output_path())
+    output = _output_path()
+    _validate_branding(output)
+    _stabilize_generated_packaging(output)
     return result
 
 

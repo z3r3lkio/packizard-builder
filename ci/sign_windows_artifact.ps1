@@ -48,72 +48,11 @@ function Invoke-SignTool {
     }
 }
 
-function Add-TemporaryUatTrust {
-    param(
-        [Parameter(Mandatory = $true)]
-        [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate
-    )
-
-    $addedStores = @()
-    $thumbprint = $Certificate.Thumbprint
-    foreach ($storeName in @('Root', 'TrustedPublisher')) {
-        $store = [System.Security.Cryptography.X509Certificates.X509Store]::new(
-            $storeName,
-            [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
-        )
-        try {
-            $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-            $existing = $store.Certificates.Find(
-                [System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
-                $thumbprint,
-                $false
-            )
-            if ($existing.Count -eq 0) {
-                $publicCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($Certificate.RawData)
-                $store.Add($publicCertificate)
-                $addedStores += $storeName
-                Write-Host "Temporarily trusted Packizard UAT certificate in CurrentUser\\$storeName ($thumbprint)"
-            }
-        }
-        finally {
-            $store.Close()
-        }
-    }
-    return ,$addedStores
-}
-
-function Remove-TemporaryUatTrust {
-    param(
-        [Parameter(Mandatory = $true)][string]$Thumbprint,
-        [Parameter(Mandatory = $true)][string[]]$StoreNames
-    )
-
-    foreach ($storeName in $StoreNames) {
-        $store = [System.Security.Cryptography.X509Certificates.X509Store]::new(
-            $storeName,
-            [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
-        )
-        try {
-            $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-            $matches = $store.Certificates.Find(
-                [System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
-                $Thumbprint,
-                $false
-            )
-            foreach ($match in $matches) {
-                $store.Remove($match)
-            }
-        }
-        finally {
-            $store.Close()
-        }
-    }
-}
-
 function Assert-ExpectedAuthenticodeSigner {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$ExpectedThumbprint
+        [Parameter(Mandatory = $true)][string]$ExpectedThumbprint,
+        [switch]$AllowUntrustedSelfSigned
     )
 
     $signature = Get-AuthenticodeSignature -FilePath $Path
@@ -123,9 +62,27 @@ function Assert-ExpectedAuthenticodeSigner {
     if ($signature.SignerCertificate.Thumbprint -ne $ExpectedThumbprint) {
         throw "Unexpected Authenticode signer on $Path. Expected $ExpectedThumbprint, got $($signature.SignerCertificate.Thumbprint)."
     }
-    if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
-        throw "Authenticode signature status for $Path is $($signature.Status): $($signature.StatusMessage)"
+
+    if ($signature.Status -eq [System.Management.Automation.SignatureStatus]::Valid) {
+        return
     }
+
+    if ($AllowUntrustedSelfSigned) {
+        if ($signature.Status -eq [System.Management.Automation.SignatureStatus]::NotTrusted) {
+            Write-Host "UAT signature verified on $Path; signer is intentionally self-signed and untrusted by the hosted runner."
+            return
+        }
+
+        if (
+            $signature.Status -eq [System.Management.Automation.SignatureStatus]::UnknownError -and
+            $signature.StatusMessage -match '(?i)(untrusted|root certificate|trust provider|certificate chain)'
+        ) {
+            Write-Host "UAT signature verified on $Path; Windows reported the expected untrusted-root chain status."
+            return
+        }
+    }
+
+    throw "Authenticode signature status for $Path is $($signature.Status): $($signature.StatusMessage)"
 }
 
 $pfxBase64 = $env:PACKIZARD_CODESIGN_PFX_B64
@@ -157,7 +114,6 @@ $tempRoot = Join-Path $env:RUNNER_TEMP "packizard-sign-$Architecture-$([guid]::N
 $extractRoot = Join-Path $tempRoot 'payload'
 $pfxPath = Join-Path $tempRoot 'packizard-codesign.pfx'
 New-Item -ItemType Directory -Path $extractRoot -Force | Out-Null
-$temporaryTrustStores = @()
 $signingCertificate = $null
 
 try {
@@ -187,7 +143,7 @@ try {
             throw 'The configured Packizard certificate is self-signed and this build is outside the UAT trust boundary.'
         }
         Write-Host 'Self-signed Packizard certificate accepted for UAT validation only.'
-        $temporaryTrustStores = @(Add-TemporaryUatTrust -Certificate $signingCertificate)
+        Write-Host 'Skipping Windows trust-store mutation and RFC3161 timestamping for self-signed UAT signing.'
     }
 
     Expand-Archive -LiteralPath $zip.FullName -DestinationPath $extractRoot -Force
@@ -218,17 +174,32 @@ try {
 
     foreach ($exe in $executables) {
         Write-Host "Signing $($exe.FullName)"
-        Invoke-SignTool -SignTool $signTool -Arguments @(
+
+        $signArguments = @(
             'sign',
             '/fd', 'SHA256',
-            '/td', 'SHA256',
-            '/tr', $timestampUrl,
             '/f', $pfxPath,
-            '/p', $pfxPassword,
-            $exe.FullName
+            '/p', $pfxPassword
         )
-        Invoke-SignTool -SignTool $signTool -Arguments @('verify', '/pa', '/all', '/v', $exe.FullName)
-        Assert-ExpectedAuthenticodeSigner -Path $exe.FullName -ExpectedThumbprint $expectedThumbprint
+        if (-not $isSelfSigned) {
+            $signArguments += @(
+                '/td', 'SHA256',
+                '/tr', $timestampUrl
+            )
+        }
+        $signArguments += $exe.FullName
+
+        Invoke-SignTool -SignTool $signTool -Arguments $signArguments
+
+        if ($isSelfSigned) {
+            Assert-ExpectedAuthenticodeSigner `
+                -Path $exe.FullName `
+                -ExpectedThumbprint $expectedThumbprint `
+                -AllowUntrustedSelfSigned
+        } else {
+            Invoke-SignTool -SignTool $signTool -Arguments @('verify', '/pa', '/all', '/v', $exe.FullName)
+            Assert-ExpectedAuthenticodeSigner -Path $exe.FullName -ExpectedThumbprint $expectedThumbprint
+        }
     }
 
     Remove-Item -LiteralPath $zip.FullName -Force
@@ -241,9 +212,6 @@ try {
     Write-Host "SHA-256 $hash"
 }
 finally {
-    if ($signingCertificate -and $temporaryTrustStores.Count -gt 0) {
-        Remove-TemporaryUatTrust -Thumbprint $signingCertificate.Thumbprint -StoreNames $temporaryTrustStores
-    }
     if ($signingCertificate) {
         $signingCertificate.Dispose()
     }

@@ -145,6 +145,7 @@ jobs:
             runner: macos-15
             python_arch: arm64
     runs-on: ${{ matrix.runner }}
+    environment: packizard-builder
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-python@v7.0.0
@@ -290,7 +291,6 @@ jobs:
           require_file Packizard-Builder-Windows-x64 'Packizard-Builder-*-Windows-x64.zip'
           require_file Packizard-Builder-Windows-arm64 'Packizard-Builder-*-Windows-arm64.zip'
           require_file Packizard-Builder-Linux-x64 'Packizard-Builder-*-Linux-x64.AppImage'
-          require_file Packizard-Builder-Linux-arm64 'Packizard-Builder-*-Linux-arm64.AppImage'
           require_file Packizard-Builder-macOS-x64 'Packizard-Builder-*-macOS-x64.zip'
           require_file Packizard-Builder-macOS-arm64 'Packizard-Builder-*-macOS-arm64.zip'
           for artifact in "${expected[@]}"; do

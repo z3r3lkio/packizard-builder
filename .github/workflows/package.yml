@@ -101,7 +101,6 @@ jobs:
         working-directory: build-src
         env:
           QT_QPA_PLATFORM: offscreen
-          PACKIZARD_PKG_BRIDGE: ${{ github.workspace }}/build-src/pkg_bridge/linux-x64/Packizard.PkgBridge
         run: python -m unittest discover -s tests -v
       - name: Compile Python sources
         working-directory: build-src

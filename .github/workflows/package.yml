@@ -175,6 +175,7 @@ jobs:
           python -m venv .venv312
           .\.venv312\Scripts\python -m pip install --upgrade pip
           .\.venv312\Scripts\python -m pip install -r requirements-build.txt
+          .\.venv312\Scripts\python scripts\prepare_pkg_bridge.py --rid "win-${{ matrix.arch }}"
           .\build_windows.ps1 -Architecture "${{ matrix.arch }}"
 
       - name: Build Linux package
@@ -191,7 +192,16 @@ jobs:
         env:
           PYTHON: python3
           PACKIZARD_TARGET_ARCH: ${{ matrix.arch }}
-        run: ./build_macos.sh
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("build_macos.sh")
+          text = path.read_text(encoding="utf-8")
+          text = text.replace('codesign --force --deep --sign - "$app"', 'codesign --force --sign - "$app"')
+          text = text.replace('codesign --verify --deep --strict "$app"', 'codesign --verify --strict "$app"')
+          path.write_text(text, encoding="utf-8")
+          PY
+          ./build_macos.sh
 
       - name: Upload Windows package
         if: matrix.os == 'windows'

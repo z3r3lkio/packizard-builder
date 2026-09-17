@@ -7,6 +7,7 @@ import base64
 import json
 import lzma
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -129,24 +130,44 @@ def _apply_engine_pin(overlay: Path, output: Path) -> None:
     run(sys.executable, str(updater), "--version", version, "--ref", ref, cwd=output)
 
 
-def _write_branding(overlay: Path, output: Path) -> None:
-    logo = overlay / "ci" / "packizard_logo.b64"
-    if not logo.is_file():
-        raise SystemExit("Missing Packizard branding artwork")
-    # The historical transport file may contain separators and may have lost final
-    # Base64 padding through previous content tooling. Normalize and repair only the
-    # transport encoding; the decoded PNG is still structurally checked below.
-    encoded = "".join(logo.read_text(encoding="ascii").split())
-    encoded += "=" * (-len(encoded) % 4)
-    artwork = base64.b64decode(encoded, validate=False)
+def _validate_branding_png(artwork: bytes) -> tuple[int, int]:
     if not artwork.startswith(b"\x89PNG\r\n\x1a\n"):
         raise RuntimeError("Packizard branding artwork is not a valid PNG payload")
+    if len(artwork) < 33 or artwork[12:16] != b"IHDR":
+        raise RuntimeError("Packizard branding PNG has no valid IHDR")
+    width, height = struct.unpack(">II", artwork[16:24])
+    if width < 256 or height < 256:
+        raise RuntimeError(f"Packizard branding PNG is too small: {width}x{height}")
     if b"IEND" not in artwork[-64:]:
         raise RuntimeError("Packizard branding PNG is incomplete")
+    return width, height
+
+
+def _write_branding(overlay: Path, output: Path) -> None:
+    png_logo = overlay / "ci" / "packizard_logo.png"
+    legacy_logo = overlay / "ci" / "packizard_logo.b64"
+
+    if png_logo.is_file():
+        artwork = png_logo.read_bytes()
+    elif legacy_logo.is_file():
+        # Compatibility with older compact overlays. New artwork is stored as a
+        # normal PNG so binary truncation is caught by Git and CI instead of hidden.
+        encoded = "".join(legacy_logo.read_text(encoding="ascii").split())
+        encoded += "=" * (-len(encoded) % 4)
+        artwork = base64.b64decode(encoded, validate=False)
+    else:
+        raise SystemExit("Missing Packizard branding artwork")
+
+    width, height = _validate_branding_png(artwork)
     destination = output / "resources" / "branding"
     destination.mkdir(parents=True, exist_ok=True)
+
+    # Use the same complete, uncropped square artwork for both surfaces. The Qt
+    # sidebar and platform icon pipelines scale this source down; no head crop or
+    # alternate thumbnail is generated here.
     (destination / "packizard_icon.png").write_bytes(artwork)
     (destination / "packizard_sidebar.png").write_bytes(artwork)
+    print(f"Packizard branding: complete artwork {width}x{height} -> icon + sidebar")
 
 
 def main() -> int:

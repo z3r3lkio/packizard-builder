@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import lzma
 import os
 import sys
 import tarfile
 from pathlib import Path
+
+BRANDING_SHA256 = "b7729848ab58b6484ec16a278febda98c0c8e6809cbf77363e422928a046af13"
 
 
 def _restore_canonical_preimage(ci_dir: Path, root: Path) -> None:
@@ -31,6 +34,40 @@ def _output_path() -> Path:
         if index + 1 < len(args):
             return Path(args[index + 1]).resolve()
     return Path("build-src").resolve()
+
+
+def _write_strict_branding(overlay: Path, output: Path) -> None:
+    """Decode and install the approved full Packizard artwork without cropping."""
+    ci_dir = overlay / "ci"
+    parts = sorted(ci_dir.glob("packizard_logo.b64.part-*"))
+    if not parts:
+        raise RuntimeError("Missing split Packizard branding payload")
+
+    encoded = "".join(
+        "".join(part.read_text(encoding="ascii").split())
+        for part in parts
+    )
+    artwork = base64.b64decode(encoded, validate=True)
+
+    if not artwork.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise RuntimeError("Packizard branding artwork is not a valid PNG")
+    if len(artwork) < 24 or b"IEND" not in artwork[-64:]:
+        raise RuntimeError("Packizard branding PNG is incomplete")
+
+    width = int.from_bytes(artwork[16:20], "big")
+    height = int.from_bytes(artwork[20:24], "big")
+    if width != 256 or height != 256:
+        raise RuntimeError(f"Unexpected Packizard branding dimensions: {width}x{height}")
+
+    digest = hashlib.sha256(artwork).hexdigest()
+    if digest != BRANDING_SHA256:
+        raise RuntimeError(f"Packizard branding SHA-256 mismatch: {digest}")
+
+    destination = output / "resources" / "branding"
+    destination.mkdir(parents=True, exist_ok=True)
+    (destination / "packizard_icon.png").write_bytes(artwork)
+    (destination / "packizard_sidebar.png").write_bytes(artwork)
+    print(f"Packizard branding: installed approved full artwork ({width}x{height}, sha256={digest})")
 
 
 def _stabilize_generated_packaging(root: Path) -> None:
@@ -92,7 +129,7 @@ def _stabilize_generated_packaging(root: Path) -> None:
 
 def main() -> int:
     ci_dir = Path(__file__).resolve().parent
-    # Force the verified split payload. The monolithic compatibility copy is
+    # Force the verified split PKG payload. The monolithic compatibility copy is
     # retained in the branch for auditability but is not consumed by bootstrap.
     packed = ci_dir / "integrated_pkg.patch.xz.b64"
     if packed.is_file():
@@ -118,9 +155,10 @@ def main() -> int:
             restored = True
         return original_run(*args, cwd=cwd)
 
-    # Branding is release-critical. Never replace invalid artwork with a silent
-    # placeholder: let bootstrap fail so UAT cannot produce a false Golden Build.
+    # Branding is release-critical: only the approved complete artwork is accepted.
+    # No 1x1 or other silent fallback is allowed to reach a Golden Build.
     impl.run = deterministic_run
+    impl._write_branding = _write_strict_branding
     result = impl.main()
     _stabilize_generated_packaging(_output_path())
     return result

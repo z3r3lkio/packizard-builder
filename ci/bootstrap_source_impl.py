@@ -117,6 +117,86 @@ def _patch_packaging_scripts(output: Path) -> None:
         linux_script.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 
 
+def _patch_application_branding(output: Path) -> None:
+    """Use the Packizard artwork for both the PE icon and Qt window icon."""
+    main_spec = None
+    for spec_path in sorted(output.glob("*.spec")):
+        text = spec_path.read_text(encoding="utf-8")
+        if '"main.py"' in text and "EXE(" in text:
+            main_spec = spec_path
+            break
+    if main_spec is None:
+        raise RuntimeError("Could not locate the main PyInstaller spec for Packizard Builder")
+
+    spec_text = main_spec.read_text(encoding="utf-8")
+    icon_line = '    icon="resources/branding/packizard_icon.png",'
+    spec_lines = spec_text.splitlines()
+    replaced_icon = False
+    in_exe = False
+    exe_depth = 0
+    new_lines: list[str] = []
+    for line in spec_lines:
+        stripped = line.strip()
+        if not in_exe and stripped.startswith("exe = EXE("):
+            in_exe = True
+            exe_depth = line.count("(") - line.count(")")
+        elif in_exe:
+            exe_depth += line.count("(") - line.count(")")
+
+        if in_exe and stripped.startswith("icon="):
+            new_lines.append(icon_line)
+            replaced_icon = True
+        else:
+            new_lines.append(line)
+
+        if in_exe and exe_depth <= 0:
+            in_exe = False
+
+    spec_text = "\n".join(new_lines) + "\n"
+    if not replaced_icon:
+        marker = "    console=False,\n"
+        if marker not in spec_text:
+            raise RuntimeError(f"Could not find GUI EXE icon insertion point in {main_spec.name}")
+        spec_text = spec_text.replace(marker, marker + icon_line + "\n", 1)
+    main_spec.write_text(spec_text, encoding="utf-8", newline="\n")
+
+    main_py = output / "main.py"
+    text = main_py.read_text(encoding="utf-8")
+    if "from PySide6.QtGui import QIcon" not in text:
+        qt_core = next(
+            (line for line in text.splitlines() if line.startswith("from PySide6.QtCore import ")),
+            None,
+        )
+        if qt_core is None:
+            raise RuntimeError("Could not locate PySide6.QtCore import in main.py")
+        text = text.replace(qt_core, qt_core + "\nfrom PySide6.QtGui import QIcon", 1)
+
+    runtime_marker = "    app.setApplicationVersion(VERSION)\n"
+    runtime_block = (
+        runtime_marker
+        + "    resource_root = Path(getattr(sys, \"_MEIPASS\", Path(__file__).resolve().parent))\n"
+        + "    app_icon_path = resource_root / \"resources\" / \"branding\" / \"packizard_icon.png\"\n"
+        + "    if app_icon_path.is_file():\n"
+        + "        app.setWindowIcon(QIcon(str(app_icon_path)))\n"
+    )
+    if "app_icon_path = resource_root" not in text:
+        if runtime_marker not in text:
+            raise RuntimeError("Could not locate QApplication branding insertion point in main.py")
+        text = text.replace(runtime_marker, runtime_block, 1)
+
+    window_marker = "    window = MainWindow()\n"
+    if "window.setWindowIcon(app.windowIcon())" not in text:
+        if window_marker not in text:
+            raise RuntimeError("Could not locate MainWindow construction in main.py")
+        text = text.replace(
+            window_marker,
+            window_marker + "    window.setWindowIcon(app.windowIcon())\n",
+            1,
+        )
+    main_py.write_text(text, encoding="utf-8", newline="\n")
+    print(f"Configured Packizard branding for PyInstaller and Qt via {main_spec.name}")
+
+
 def _apply_engine_pin(overlay: Path, output: Path) -> None:
     pin_path = overlay / "ci" / "libprospero_pin.json"
     if not pin_path.is_file():
@@ -203,6 +283,7 @@ def main() -> int:
 
     _apply_engine_pin(overlay, output)
     _write_branding(overlay, output)
+    _patch_application_branding(output)
     print(f"Prepared Packizard source at {output}")
     return 0
 

@@ -101,7 +101,6 @@ def main() -> int:
     import bootstrap_source_impl as impl
 
     original_run = impl.run
-    original_branding = impl._write_branding
     restored = False
 
     def deterministic_run(*args: str, cwd=None) -> None:
@@ -119,27 +118,7 @@ def main() -> int:
             restored = True
         return original_run(*args, cwd=cwd)
 
-    def deterministic_branding(overlay: Path, output: Path) -> None:
-        try:
-            original_branding(overlay, output)
-            return
-        except Exception as exc:  # noqa: BLE001 - engine CI must remain diagnosable
-            print(f"WARNING: using CI-only branding fallback: {exc}")
-
-        fallback = base64.b64decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
-        )
-        destination = output / "resources" / "branding"
-        destination.mkdir(parents=True, exist_ok=True)
-        (destination / "packizard_icon.png").write_bytes(fallback)
-        (destination / "packizard_sidebar.png").write_bytes(fallback)
-        (destination / ".ci_branding_fallback").write_text(
-            "CI-only fallback; replace with verified Packizard artwork before UAT/golden promotion.\n",
-            encoding="utf-8",
-        )
-
     impl.run = deterministic_run
-    impl._write_branding = deterministic_branding
     result = impl.main()
     _stabilize_generated_packaging(_output_path())
     return result

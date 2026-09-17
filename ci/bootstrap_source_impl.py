@@ -60,12 +60,7 @@ def _decode_incremental_patch(overlay: Path) -> Path | None:
 
 
 def _patch_macos_worker_specs(output: Path) -> None:
-    """Normalize the macOS worker specs before applying the 0.2 overlay.
-
-    This is intentionally host-independent. CI reconstructs the same source tree on
-    Linux, Windows and macOS, so the textual base for the incremental patch must be
-    identical on every runner.
-    """
+    """Normalize the macOS worker specs before applying the 0.2 overlay."""
     for spec_name, executable_name in (("ampr_pack.spec", "ampr_pack"), ("ampr_pack_profile.spec", "ampr_pack_profile")):
         spec_path = output / spec_name
         text = spec_path.read_text(encoding="utf-8")
@@ -117,7 +112,7 @@ def _patch_packaging_scripts(output: Path) -> None:
         linux_script.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 
 
-def _patch_application_branding(output: Path) -> None:
+def _patch_application_branding(overlay: Path, output: Path) -> None:
     """Use the Packizard artwork for both the PE icon and Qt window icon."""
     main_spec = None
     for spec_path in sorted(output.glob("*.spec")):
@@ -128,8 +123,15 @@ def _patch_application_branding(output: Path) -> None:
     if main_spec is None:
         raise RuntimeError("Could not locate the main PyInstaller spec for Packizard Builder")
 
+    helper_source = overlay / "ci" / "prepare_windows_icon.py"
+    if not helper_source.is_file():
+        raise RuntimeError(f"Missing Windows icon generator: {helper_source}")
+    helper_destination = output / "scripts" / "prepare_windows_icon.py"
+    helper_destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(helper_source, helper_destination)
+
     spec_text = main_spec.read_text(encoding="utf-8")
-    icon_line = '    icon="resources/branding/packizard_icon.png",'
+    icon_line = '    icon="resources/branding/packizard_icon.ico",'
     spec_lines = spec_text.splitlines()
     replaced_icon = False
     in_exe = False
@@ -159,6 +161,17 @@ def _patch_application_branding(output: Path) -> None:
             raise RuntimeError(f"Could not find GUI EXE icon insertion point in {main_spec.name}")
         spec_text = spec_text.replace(marker, marker + icon_line + "\n", 1)
     main_spec.write_text(spec_text, encoding="utf-8", newline="\n")
+
+    windows_script = output / "build_windows.ps1"
+    if windows_script.is_file():
+        windows_text = windows_script.read_text(encoding="utf-8")
+        prepare_line = '    & $python scripts\\prepare_windows_icon.py\n'
+        if "scripts\\prepare_windows_icon.py" not in windows_text:
+            pyinstaller_marker = "    & $python -m PyInstaller --noconfirm --clean --workpath $work --distpath $dist Lazy_AMPR.spec\n"
+            if pyinstaller_marker not in windows_text:
+                raise RuntimeError("Could not find main PyInstaller invocation in build_windows.ps1")
+            windows_text = windows_text.replace(pyinstaller_marker, prepare_line + pyinstaller_marker, 1)
+            windows_script.write_text(windows_text, encoding="utf-8", newline="\n")
 
     main_py = output / "main.py"
     text = main_py.read_text(encoding="utf-8")
@@ -269,7 +282,6 @@ def main() -> int:
         if patch.name.startswith("packizard-overlay-"):
             patch.unlink(missing_ok=True)
 
-    # The 0.2 overlay was generated against the already-hardened 0.1.2 tree.
     _patch_macos_worker_specs(output)
     _patch_packaging_scripts(output)
 
@@ -283,7 +295,7 @@ def main() -> int:
 
     _apply_engine_pin(overlay, output)
     _write_branding(overlay, output)
-    _patch_application_branding(output)
+    _patch_application_branding(overlay, output)
     print(f"Prepared Packizard source at {output}")
     return 0
 

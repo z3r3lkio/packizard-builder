@@ -8,6 +8,11 @@ import lzma
 import tarfile
 from pathlib import Path
 
+# Valid 1x1 transparent PNG used only to unblock engine/tests when the historical
+# Base64 artwork transport is corrupt. A Golden build is not considered promotable
+# until the real high-resolution Packizard artwork replaces this fallback path.
+_FALLBACK_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg=="
+
 
 def _restore_canonical_preimage(ci_dir: Path, root: Path) -> None:
     """Restore the exact 0.1.2 files used to generate the 0.2 patch."""
@@ -52,19 +57,24 @@ def main() -> int:
         return original_run(*args, cwd=cwd)
 
     def deterministic_branding(overlay: Path, output: Path) -> None:
-        """Keep source reconstruction deterministic while the original artwork is staged.
-
-        The canonical 0.1.2 preimage already contains valid Packizard branding assets.
-        CI must validate the integrated PKG engine independently of the legacy encoded
-        artwork transport file. The final high-resolution source artwork is promoted as
-        a separate verified asset before the feature becomes eligible for UAT.
-        """
+        """Keep CI moving while branding transport is repaired independently."""
         icon = output / "resources" / "branding" / "packizard_icon.png"
         sidebar = output / "resources" / "branding" / "packizard_sidebar.png"
         if icon.is_file() and sidebar.is_file():
             print("Using canonical Packizard branding assets for CI reconstruction")
             return
-        original_branding(overlay, output)
+        try:
+            original_branding(overlay, output)
+            return
+        except Exception as exc:
+            destination = output / "resources" / "branding"
+            destination.mkdir(parents=True, exist_ok=True)
+            fallback = base64.b64decode(_FALLBACK_PNG_B64, validate=True)
+            icon.write_bytes(fallback)
+            sidebar.write_bytes(fallback)
+            marker = output / ".packizard-ci-branding-fallback"
+            marker.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
+            print(f"WARNING: using CI-only branding fallback: {exc}")
 
     impl.run = deterministic_run
     impl._write_branding = deterministic_branding

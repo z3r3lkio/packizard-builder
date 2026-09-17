@@ -167,9 +167,11 @@ def _patch_application_branding(overlay: Path, output: Path) -> None:
         windows_text = windows_script.read_text(encoding="utf-8")
         prepare_line = '    & $python scripts\\prepare_windows_icon.py\n'
         if "scripts\\prepare_windows_icon.py" not in windows_text:
-            pyinstaller_marker = "    & $python -m PyInstaller --noconfirm --clean --workpath $work --distpath $dist Lazy_AMPR.spec\n"
+            pyinstaller_marker = f"    & $python -m PyInstaller --noconfirm --clean --workpath $work --distpath $dist {main_spec.name}\n"
             if pyinstaller_marker not in windows_text:
-                raise RuntimeError("Could not find main PyInstaller invocation in build_windows.ps1")
+                raise RuntimeError(
+                    f"Could not find PyInstaller invocation for {main_spec.name} in build_windows.ps1"
+                )
             windows_text = windows_text.replace(pyinstaller_marker, prepare_line + pyinstaller_marker, 1)
             windows_script.write_text(windows_text, encoding="utf-8", newline="\n")
 

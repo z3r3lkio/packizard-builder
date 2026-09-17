@@ -175,6 +175,7 @@ try {
 
     $expectedThumbprint = $signingCertificate.Thumbprint
     $isSelfSigned = $signingCertificate.Subject -eq $signingCertificate.Issuer
+    $isUatContext = $AllowSelfSignedUat -or $env:GITHUB_REF -eq 'refs/heads/UAT' -or $env:GITHUB_BASE_REF -eq 'UAT'
     Write-Host "Authenticode certificate subject: $($signingCertificate.Subject)"
     Write-Host "Authenticode certificate thumbprint: $expectedThumbprint"
 
@@ -182,9 +183,10 @@ try {
         if ($RequireSigning) {
             throw 'Tagged releases require a publicly trusted Authenticode certificate; the configured Packizard certificate is self-signed.'
         }
-        if (-not $AllowSelfSignedUat) {
-            throw 'The configured Packizard certificate is self-signed and this build is not allowed to use UAT self-signed trust.'
+        if (-not $isUatContext) {
+            throw 'The configured Packizard certificate is self-signed and this build is outside the UAT trust boundary.'
         }
+        Write-Host 'Self-signed Packizard certificate accepted for UAT validation only.'
         $temporaryTrustStores = @(Add-TemporaryUatTrust -Certificate $signingCertificate)
     }
 

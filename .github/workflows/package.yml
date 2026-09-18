@@ -9,6 +9,7 @@ on:
   push:
     branches:
       - UAT
+      - "feature/**"
     tags:
       - "v*"
 
@@ -88,6 +89,9 @@ jobs:
           grep -F 'scripts\prepare_pkg_bridge.py --rid $rid' build-src/build_windows.ps1
           grep -F 'codesign --force --sign - "$app/Contents/MacOS/pkg_bridge/Packizard.PkgBridge"' build-src/build_macos.sh
           grep -F 'rm -rf -- "$appdir/usr/share/metainfo"' build-src/build_linux.sh
+          grep -F 'BuildToFile(IReadOnlyList<ProsperoPs5InnerPayload>' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PFS/ProsperoPs5InnerImageBuilder.cs
+          grep -F 'BuildForPackageToFile(' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PFS/ProsperoOuterPfsBuilder.cs
+          grep -F 'BuildDebugSiSegmentFromFile(' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/ProsperoSiArchive.cs
           if grep -R -Fq 'LibProsperoPkg.Gui.exe' build-src/core build-src/gui build-src/utils; then
             echo "External PKG GUI launcher leaked back into runtime code" >&2
             exit 1

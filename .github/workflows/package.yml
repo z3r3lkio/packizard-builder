@@ -179,21 +179,6 @@ jobs:
           .\.venv312\Scripts\python scripts\prepare_pkg_bridge.py --rid "win-${{ matrix.arch }}"
           .\build_windows.ps1 -Architecture "${{ matrix.arch }}"
 
-      - name: Authenticode-sign Windows executables
-        if: matrix.os == 'windows'
-        shell: pwsh
-        env:
-          PACKIZARD_CODESIGN_PFX_B64: ${{ secrets.PACKIZARD_CODESIGN_PFX_B64 }}
-          PACKIZARD_CODESIGN_PFX_PASSWORD: ${{ secrets.PACKIZARD_CODESIGN_PFX_PASSWORD }}
-          PACKIZARD_TIMESTAMP_URL: ${{ vars.PACKIZARD_TIMESTAMP_URL }}
-        run: |
-          $requireSigning = "${{ startsWith(github.ref, 'refs/tags/v') }}" -eq "true"
-          if ($requireSigning) {
-            .\ci\sign_windows_artifact.ps1 -Architecture "${{ matrix.arch }}" -RequireSigning
-          } else {
-            .\ci\sign_windows_artifact.ps1 -Architecture "${{ matrix.arch }}"
-          }
-
       - name: Build Linux package
         if: matrix.os == 'linux'
         working-directory: build-src

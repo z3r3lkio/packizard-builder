@@ -6,6 +6,7 @@ import base64
 import io
 import lzma
 import os
+import shutil
 import struct
 import sys
 import tarfile
@@ -55,6 +56,32 @@ def _validate_branding(root: Path) -> None:
             raise RuntimeError(f"Incomplete PNG branding file: {path}")
 
     print("Validated Packizard branding: complete square artwork, no fallback placeholder")
+
+
+def _apply_large_pkg_overrides(root: Path) -> None:
+    """Overlay the large-package streaming fixes onto the pinned LibProsperoPKG source."""
+    override_root = Path(__file__).resolve().parent / "large_pkg_overrides"
+    targets = {
+        "ProsperoPs5InnerImageBuilder.cs": root / "vendor" / "LibProsperoPKG" / "src" / "LibProsperoPkg" / "PFS" / "ProsperoPs5InnerImageBuilder.cs",
+        "ProsperoPs5InnerImageAssembler.cs": root / "vendor" / "LibProsperoPKG" / "src" / "LibProsperoPkg" / "PFS" / "ProsperoPs5InnerImageAssembler.cs",
+        "ProsperoOuterPfsBuilder.cs": root / "vendor" / "LibProsperoPKG" / "src" / "LibProsperoPkg" / "PFS" / "ProsperoOuterPfsBuilder.cs",
+        "ProsperoPkgBuilder.cs": root / "vendor" / "LibProsperoPKG" / "src" / "LibProsperoPkg" / "PKG" / "ProsperoPkgBuilder.cs",
+        "ProsperoFihBuilder.cs": root / "vendor" / "LibProsperoPKG" / "src" / "LibProsperoPkg" / "PKG" / "ProsperoFihBuilder.cs",
+        "ProsperoNapsMeta.cs": root / "vendor" / "LibProsperoPKG" / "src" / "LibProsperoPkg" / "PKG" / "ProsperoNapsMeta.cs",
+        "ProsperoSiArchive.cs": root / "vendor" / "LibProsperoPKG" / "src" / "LibProsperoPkg" / "PKG" / "ProsperoSiArchive.cs",
+        "ProsperoPlayGo.cs": root / "vendor" / "LibProsperoPKG" / "src" / "LibProsperoPkg" / "PlayGo" / "ProsperoPlayGo.cs",
+        "ProsperoPackageBuilder.cs": root / "vendor" / "LibProsperoPKG" / "src" / "LibProsperoPkg" / "ProsperoPackageBuilder.cs",
+    }
+
+    for name, destination in targets.items():
+        source = override_root / name
+        if not source.is_file():
+            raise RuntimeError(f"Missing large-package override: {source}")
+        if not destination.is_file():
+            raise RuntimeError(f"LibProsperoPKG override target is missing: {destination}")
+        shutil.copy2(source, destination)
+
+    print(f"Applied {len(targets)} LibProsperoPKG large-package streaming overrides")
 
 
 def _stabilize_generated_packaging(root: Path) -> None:
@@ -181,6 +208,7 @@ def main() -> int:
 
     result = impl.main()
     output = _output_path()
+    _apply_large_pkg_overrides(output)
     _validate_branding(output)
     _stabilize_generated_packaging(output)
     return result

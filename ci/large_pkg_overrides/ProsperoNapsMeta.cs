@@ -151,7 +151,7 @@ public static class ProsperoNapsMeta
             return [];
 
         uint innerBlocks = (uint)(innerImageSize / PfsBlockSize);
-        int outerBlocks = mountImageLength / Meta18BlockSize;
+        int outerBlocks = checked((int)(mountImageLength / Meta18BlockSize));
 
         // nwonly: build ibcl/i2ob/i2op/ihsh/file over the compressed INNER-image NAPS block map so the
         // installer derives a nonzero, 0x10000-aligned content package_size and clears the 0x80b21185

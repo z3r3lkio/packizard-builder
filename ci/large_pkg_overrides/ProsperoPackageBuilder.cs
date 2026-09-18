@@ -538,10 +538,17 @@ public static class ProsperoPackageBuilder
     }
 
     /// <summary>Best-effort deletion of an intermediate build artifact.</summary>
-    private static void TryDelete(string path)
+    private static void TryDelete(string? path)
     {
-        try { if (File.Exists(path)) File.Delete(path); }
-        catch { /* best-effort cleanup of intermediate artifacts */ }
+        try
+        {
+            if (!string.IsNullOrEmpty(path) && File.Exists(path))
+                File.Delete(path);
+        }
+        catch
+        {
+            /* best-effort cleanup of intermediate artifacts */
+        }
     }
 
     /// <summary>

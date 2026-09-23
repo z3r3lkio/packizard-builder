@@ -1,0 +1,76 @@
+name: Track latest LibProsperoPKG main snapshot
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * *"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  UPSTREAM_REPO: SvenGDK/LibProsperoPKG
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: UAT
+          fetch-depth: 0
+      - name: Discover latest upstream main snapshot
+        id: latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(gh api "repos/$UPSTREAM_REPO/branches/main" --jq '.commit.sha')"
+          csproj="$(gh api "repos/$UPSTREAM_REPO/contents/src/LibProsperoPkg/LibProsperoPkg.csproj?ref=$sha" --jq -r '.content' | base64 -d)"
+          version="$(printf '%s' "$csproj" | sed -n 's:.*<Version>\([^<]*\)</Version>.*:\1:p' | head -n1)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Open UAT feature update when needed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.latest.outputs.version }}
+          SHA: ${{ steps.latest.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_version="$(python -c 'import json; print(json.load(open("ci/libprospero_pin.json"))["version"])')"
+          current_sha="$(python -c 'import json; print(json.load(open("ci/libprospero_pin.json"))["ref"])')"
+          if [[ "$current_version" == "$VERSION" && "$current_sha" == "$SHA" ]]; then
+            echo "Packizard already tracks LibProsperoPKG $VERSION ($SHA)."
+            exit 0
+          fi
+
+          branch="feature/libprospero-${VERSION}-${SHA:0:7}"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            echo "Update branch already exists: $branch"
+            exit 0
+          fi
+
+          git switch -c "$branch"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path('ci/libprospero_pin.json')
+          data = json.loads(path.read_text())
+          data['version'] = os.environ['VERSION'].lstrip('v')
+          data['ref'] = os.environ['SHA'].lower()
+          path.write_text(json.dumps(data, indent=2) + '\n')
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ci/libprospero_pin.json
+          git commit -m "PKG: track LibProsperoPKG $VERSION snapshot"
+          git push origin "$branch"
+          gh pr create \
+            --base UAT \
+            --head "$branch" \
+            --title "PKG: validate LibProsperoPKG $VERSION snapshot" \
+            --body "Automated upstream-main candidate. The package workflow reconstructs Packizard with this pin and must compile the integrated bridge, pass tests, build all six native targets and produce a Golden Build before merge to UAT."

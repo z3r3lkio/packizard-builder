@@ -6,10 +6,10 @@ dist/
 release/
 *.AppImage
 *.zip
-# PPR-PKG Builder is an external user-supplied application; never commit it.
-tools/ppr_pkg_builder/*
-!tools/ppr_pkg_builder/.gitkeep
-
+pkg_bridge/
+vendor/LibProsperoPKG/
 resources/branding/packizard_icon.icns
-
 build-src/
+.review/
+ci/tests/**/bin/
+ci/tests/**/obj/

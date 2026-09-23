@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import io
+import importlib.util
 import lzma
 import os
 import shutil
@@ -60,6 +61,15 @@ def _validate_branding(root: Path) -> None:
 
 def _apply_large_pkg_overrides(root: Path) -> None:
     """Overlay the large-package streaming fixes onto the pinned LibProsperoPKG source."""
+    # Reconstruction runs before bridge compilation on a clean CI runner.
+    # Reuse the bridge's pinned checkout logic before touching vendor sources.
+    helper = root / "scripts" / "prepare_pkg_bridge.py"
+    spec = importlib.util.spec_from_file_location("packizard_prepare_pkg_bridge", helper)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load bridge preparation helper: {helper}")
+    bridge = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bridge)
+    bridge.ensure_upstream()
     override_root = Path(__file__).resolve().parent / "large_pkg_overrides"
     targets = {
         "ProsperoPs5InnerImageBuilder.cs": root / "vendor" / "LibProsperoPKG" / "src" / "LibProsperoPkg" / "PFS" / "ProsperoPs5InnerImageBuilder.cs",
@@ -71,13 +81,16 @@ def _apply_large_pkg_overrides(root: Path) -> None:
         "ProsperoSiArchive.cs": root / "vendor" / "LibProsperoPKG" / "src" / "LibProsperoPkg" / "PKG" / "ProsperoSiArchive.cs",
         "ProsperoPlayGo.cs": root / "vendor" / "LibProsperoPKG" / "src" / "LibProsperoPkg" / "PlayGo" / "ProsperoPlayGo.cs",
         "ProsperoPackageBuilder.cs": root / "vendor" / "LibProsperoPKG" / "src" / "LibProsperoPkg" / "ProsperoPackageBuilder.cs",
+        "ProsperoNwonlyNapsGenerator.cs": root / "vendor" / "LibProsperoPKG" / "src" / "LibProsperoPkg" / "PKG" / "ProsperoNwonlyNapsGenerator.cs",
+        "ProsperoNapsLayoutBuilder.cs": root / "vendor" / "LibProsperoPKG" / "src" / "LibProsperoPkg" / "PKG" / "ProsperoNapsLayoutBuilder.cs",
+        "ProsperoBuildTempFiles.cs": root / "vendor" / "LibProsperoPKG" / "src" / "LibProsperoPkg" / "PFS" / "ProsperoBuildTempFiles.cs",
     }
 
     for name, destination in targets.items():
         source = override_root / name
         if not source.is_file():
             raise RuntimeError(f"Missing large-package override: {source}")
-        if not destination.is_file():
+        if name != "ProsperoBuildTempFiles.cs" and not destination.is_file():
             raise RuntimeError(f"LibProsperoPKG override target is missing: {destination}")
         shutil.copy2(source, destination)
 
@@ -165,12 +178,7 @@ def _insert_windows_icon_preparation(root: Path) -> None:
 
 def main() -> int:
     ci_dir = Path(__file__).resolve().parent
-    # Force the verified split payload. The monolithic compatibility copy is
-    # retained in the branch for auditability but is not consumed by bootstrap.
-    packed = ci_dir / "integrated_pkg.patch.xz.b64"
-    if packed.is_file():
-        packed.unlink()
-
+    # The implementation prefers the verified split payload without changing the checkout.
     import bootstrap_source_impl as impl
 
     original_run = impl.run

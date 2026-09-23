@@ -172,7 +172,12 @@ public static class ProsperoPkgBuilder
     /// <returns>The output path.</returns>
     /// <exception cref="ArgumentException">A required property is missing or malformed.</exception>
     public static string Build(ProsperoPkgBuildProperties props, string outputPath, Action<string>? logger = null)
-        => Build(props, outputPath, out _, out _, out _, out _, out _, logger);
+    {
+        using var temps = new ProsperoBuildTempFiles();
+        string result = Build(props, outputPath, out _, out var si, out _, out _, out _, logger);
+        temps.Own(si?.Xml.NestedInner?.ImageFilePath);
+        return result;
+    }
 
     /// <summary>
     /// CNT-build overload that also surfaces the FIH 0xB0 nested-image-content digest — SHA3-256 of the
@@ -224,6 +229,7 @@ public static class ProsperoPkgBuilder
         long capturedNestedMetaBaseBlocks = 0;
         ProsperoFihNwonlyFields? capturedNwonlyFih = null;
         ProsperoSiBuildInputs? capturedSi = null;
+        using var temps = new ProsperoBuildTempFiles();
         BuildImageOnce();
         nestedImageDigest = capturedNestedDigest;
         nestedImageSize = capturedNestedImageSize;
@@ -232,6 +238,7 @@ public static class ProsperoPkgBuilder
         siInputs = capturedSi;
 
         log($"Done: {Path.GetFileName(outputPath)} ({new FileInfo(outputPath).Length:N0} bytes).");
+        temps.Release(capturedSi?.Xml.NestedInner?.ImageFilePath);
         return outputPath;
 
         // Builds (and writes to outputPath) one complete package.
@@ -244,6 +251,7 @@ public static class ProsperoPkgBuilder
             // derives its layout descriptor.
             LibProsperoPkg.PFS.ProsperoPs5InnerImageResult asmResult =
                 new LibProsperoPkg.PFS.ProsperoPs5InnerImageAssembler(fileTime, 0).BuildFromFsTree(innerRoot);
+            temps.Own(asmResult.ImageFilePath);
             byte[] nwonlyNaps = ProsperoNwonlyNapsGenerator.Generate(asmResult);
 
             // PlayGo file/inode count drives playgo-ficm.dat (count) and playgo-hash-table.dat (count / 2),
@@ -321,8 +329,7 @@ public static class ProsperoPkgBuilder
             ProsperoOuterPackageImage outerImage;
             if (asmResult.ImageFilePath is not null || innerImageLength > singleIndirectCapacity)
             {
-                outerImageTempPath = Path.Combine(
-                    Path.GetTempPath(), $"libprospero-outer-{Guid.NewGuid():N}.img");
+                outerImageTempPath = temps.Create();
                 log($"Large inner image ({innerImageLength:N0} bytes): using disk-backed outer PFS.");
                 outerImage = ProsperoOuterPfsBuilder.BuildForPackageToFile(
                     outerFiles, outerParameters, ekpfs, outerImageTempPath);
@@ -404,11 +411,6 @@ public static class ProsperoPkgBuilder
                 capturedSi = new ProsperoSiBuildInputs { Xml = siXml, PlayGoChunkDat = playGoChunkDat, InnerImageSize = innerImageAlignedSize };
             }
 
-            if (outerImageTempPath is not null)
-            {
-                try { File.Delete(outerImageTempPath); }
-                catch (IOException) { /* best-effort temp cleanup */ }
-            }
         }
     }
 
@@ -890,7 +892,7 @@ public static class ProsperoPkgBuilder
         // Every digest, the geometry and the entry table are now finalized on this CNT, so the reproducible
         // SI pfsimage.xml options can be assembled from the builder's own output. The inner-PFS seed is read
         // from the plaintext outer superblock at sbOffset+0x370.
-        return BuildSiXmlOptions(pkg, image, sbOffset, Path.GetFullPath(props.SourceFolder!));
+        return BuildSiXmlOptions(pkg, sblockBlock ?? Array.Empty<byte>(), 0, Path.GetFullPath(props.SourceFolder!));
     }
 
     // ---- SI (sce_suppl) pfsimage.xml option assembly ----------------------------------------------

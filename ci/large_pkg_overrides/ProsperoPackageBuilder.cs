@@ -457,9 +457,15 @@ public static class ProsperoPackageBuilder
             VolumeType = ProsperoVolumeTypeForMode(options.Mode),
         };
 
+        using var temps = new LibProsperoPkg.PFS.ProsperoBuildTempFiles();
+        if (wantsFih)
+        {
+            temps.Own(cntPath);
+            temps.Own(cntPath + ".metasig");
+        }
         log("Building the PS5 package...");
         LibProsperoPkg.PKG.ProsperoPkgBuilder.Build(buildProps, cntPath, out byte[]? nestedImageDigest, out var siInputs, out long nestedImageSize, out long nestedMetaBaseBlocks, out var nwonlyFih, log);
-        string? largeInnerTempPath = siInputs?.Xml.NestedInner?.ImageFilePath;
+        temps.Own(siInputs?.Xml.NestedInner?.ImageFilePath);
 
         if (!File.Exists(cntPath))
             throw new InvalidOperationException("The PS5 PKG builder did not produce an output package.");
@@ -486,69 +492,44 @@ public static class ProsperoPackageBuilder
         // can install — and keep ONLY that final package.
         if (!wantsFih)
         {
-            TryDelete(largeInnerTempPath);
             log("Done (CNT metadata container).");
             return new ProsperoBuildResult { OutputPath = cntPath, Warnings = warnings };
         }
 
-        try
-        {
-            log("Finalizing the CNT into a debug (FIH) image...");
+        log("Finalizing the CNT into a debug (FIH) image...");
 
-            // The trailing debug SI segment (sce_suppl) is assembled from the finalized mount image so its
-            // playgo-chunk.crc and naps_meta_300 describe the produced image. The pfsimage.xml options
-            // and PlayGo chunk descriptor were captured during the CNT build above.
-            Func<byte[], byte[]>? siFactory = siInputs is null
-                ? null
-                : mountImage => LibProsperoPkg.PKG.ProsperoSiArchive.BuildDebugSiSegment(
-                    siInputs.Xml, siInputs.PlayGoChunkDat, mountImage, siInputs.InnerImageSize, warnings);
-            Func<string, byte[]>? siPathFactory = siInputs is null
-                ? null
-                : mountImagePath => LibProsperoPkg.PKG.ProsperoSiArchive.BuildDebugSiSegmentFromFile(
-                    siInputs.Xml, siInputs.PlayGoChunkDat, mountImagePath, siInputs.InnerImageSize, warnings);
+        // The trailing debug SI segment (sce_suppl) is assembled from the finalized mount image so its
+        // playgo-chunk.crc and naps_meta_300 describe the produced image. The pfsimage.xml options
+        // and PlayGo chunk descriptor were captured during the CNT build above.
+        Func<byte[], byte[]>? siFactory = siInputs is null
+            ? null
+            : mountImage => LibProsperoPkg.PKG.ProsperoSiArchive.BuildDebugSiSegment(
+                siInputs.Xml, siInputs.PlayGoChunkDat, mountImage, siInputs.InnerImageSize, warnings);
+        Func<string, byte[]>? siPathFactory = siInputs is null
+            ? null
+            : mountImagePath => LibProsperoPkg.PKG.ProsperoSiArchive.BuildDebugSiSegmentFromFile(
+                siInputs.Xml, siInputs.PlayGoChunkDat, mountImagePath, siInputs.InnerImageSize, warnings);
 
-            var fihWarnings = LibProsperoPkg.PKG.ProsperoFihBuilder.BuildFromCnt(
-                cntPath, finalPath, LibProsperoPkg.PKG.ProsperoFihVariant.Debug, log,
-                siArchiveFactory: siFactory,
-                nestedImageDigest: nestedImageDigest,
-                nestedImageSize: nestedImageSize,
-                nestedMetaBaseBlocks: nestedMetaBaseBlocks,
-                nwonlyContentVersionHi: nwonlyFih?.ContentVersionHi ?? 0,
-                nwonlyInnerContentInodes: nwonlyFih?.InnerContentInodes ?? 0,
-                nwonlyAppFileCount: nwonlyFih?.AppFileCount ?? 0,
-                siArchivePathFactory: siPathFactory);
-            warnings.AddRange(fihWarnings);
+        var fihWarnings = LibProsperoPkg.PKG.ProsperoFihBuilder.BuildFromCnt(
+            cntPath, finalPath, LibProsperoPkg.PKG.ProsperoFihVariant.Debug, log,
+            siArchiveFactory: siFactory,
+            nestedImageDigest: nestedImageDigest,
+            nestedImageSize: nestedImageSize,
+            nestedMetaBaseBlocks: nestedMetaBaseBlocks,
+            nwonlyContentVersionHi: nwonlyFih?.ContentVersionHi ?? 0,
+            nwonlyInnerContentInodes: nwonlyFih?.InnerContentInodes ?? 0,
+            nwonlyAppFileCount: nwonlyFih?.AppFileCount ?? 0,
+            siArchivePathFactory: siPathFactory);
+        warnings.AddRange(fihWarnings);
 
-            var fihType = ProsperoPkgReader.DetectType(finalPath);
-            if (fihType != LibProsperoPkg.PKG.ProsperoPkgType.FullDebug)
-                warnings.Add($"Produced FIH image was detected as {fihType}, expected FullDebug.");
-            else
-                log("Validated output container: FullDebug PS5 FIH image.");
-        }
-        finally
-        {
-            // Remove the intermediate CNT and its detached signature so only the final FIH remains.
-            TryDelete(cntPath);
-            TryDelete(cntPath + ".metasig");
-            TryDelete(largeInnerTempPath);
-        }
+        var fihType = ProsperoPkgReader.DetectType(finalPath);
+        if (fihType != LibProsperoPkg.PKG.ProsperoPkgType.FullDebug)
+            warnings.Add($"Produced FIH image was detected as {fihType}, expected FullDebug.");
+        else
+            log("Validated output container: FullDebug PS5 FIH image.");
 
         log("Done (debug FIH).");
         return new ProsperoBuildResult { OutputPath = finalPath, Warnings = warnings };
-    }
-
-    /// <summary>Best-effort deletion of an intermediate build artifact.</summary>
-    private static void TryDelete(string? path)
-    {
-        try
-        {
-            if (!string.IsNullOrEmpty(path) && File.Exists(path))
-                File.Delete(path);
-        }
-        catch
-        {
-            /* best-effort cleanup of intermediate artifacts */
-        }
     }
 
     /// <summary>

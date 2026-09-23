@@ -113,7 +113,9 @@ public static class ProsperoFihBuilder
 
         // File.ReadAllBytes cannot represent a CNT whose embedded mount image exceeds the CLR
         // single-array limit. Route such packages through the streaming finalizer.
-        if (new FileInfo(cntPath).Length >= Array.MaxLength)
+        if (new FileInfo(cntPath).Length >= Array.MaxLength
+            || (new FileInfo(cntPath).Length >= 64L * 1024 * 1024
+                && (siArchiveFactory is null || siArchivePathFactory is not null)))
         {
             return BuildFromCntLarge(
                 cntPath, fihOutputPath, variant, log, siArchive, siArchiveFactory,

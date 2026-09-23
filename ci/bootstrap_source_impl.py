@@ -115,7 +115,8 @@ def _patch_packaging_scripts(output: Path) -> None:
 def _patch_application_branding(overlay: Path, output: Path) -> None:
     """Use the Packizard artwork for both the PE icon and Qt window icon."""
     main_spec = None
-    for spec_path in sorted(output.glob("*.spec")):
+    specs = sorted(output.glob("*.spec"), key=lambda path: (path.name != "Packizard_Builder.spec", path.name))
+    for spec_path in specs:
         text = spec_path.read_text(encoding="utf-8")
         if '"main.py"' in text and "EXE(" in text:
             main_spec = spec_path
@@ -131,7 +132,7 @@ def _patch_application_branding(overlay: Path, output: Path) -> None:
     shutil.copy2(helper_source, helper_destination)
 
     spec_text = main_spec.read_text(encoding="utf-8")
-    icon_line = '    icon="resources/branding/packizard_icon.ico",'
+    icon_line = '    icon="resources/branding/packizard_icon.ico" if sys.platform == "win32" else None,'
     spec_lines = spec_text.splitlines()
     replaced_icon = False
     in_exe = False

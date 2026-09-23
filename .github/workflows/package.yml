@@ -96,6 +96,10 @@ jobs:
             echo "External PKG GUI launcher leaked back into runtime code" >&2
             exit 1
           fi
+      - name: Test bootstrap and streaming regressions
+        run: |
+          python -m unittest discover -s tests -v
+          dotnet run --project ci/tests/StreamingRegression -- --large
       - name: Install test dependencies
         working-directory: build-src
         run: |
@@ -280,6 +284,7 @@ jobs:
           require_file Packizard-Builder-Windows-x64 'Packizard-Builder-*-Windows-x64.zip'
           require_file Packizard-Builder-Windows-arm64 'Packizard-Builder-*-Windows-arm64.zip'
           require_file Packizard-Builder-Linux-x64 'Packizard-Builder-*-Linux-x64.AppImage'
+          require_file Packizard-Builder-Linux-arm64 'Packizard-Builder-*-Linux-arm64.AppImage'
           require_file Packizard-Builder-macOS-x64 'Packizard-Builder-*-macOS-x64.zip'
           require_file Packizard-Builder-macOS-arm64 'Packizard-Builder-*-macOS-arm64.zip'
           for artifact in "${expected[@]}"; do

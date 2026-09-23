@@ -19,6 +19,9 @@ public sealed class ProsperoPs5InnerPayload
     /// <summary>The uncompressed payload bytes.</summary>
     public byte[] Data = Array.Empty<byte>();
 
+    /// <summary>Optional already-encoded file payload for the disk-backed writer.</summary>
+    public string? DataPath;
+
     /// <summary>When true the payload is stored raw (never compressed) and is placed block-aligned.</summary>
     public bool StoreRaw;
 
@@ -77,6 +80,23 @@ public sealed class ProsperoPs5InnerImageBuilder
         return comp;
     }
 
+    /// <summary>Compresses independent 256 KiB blocks without retaining the whole source.</summary>
+    public static void CompressPayloadToStream(Stream source, Stream destination, long length)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(length);
+        var buffer = new byte[CompressBlockSize];
+        long remaining = length;
+        while (remaining > 0)
+        {
+            int count = (int)Math.Min(remaining, buffer.Length);
+            source.ReadExactly(buffer.AsSpan(0, count));
+            byte[] block = count == buffer.Length ? buffer : buffer.AsSpan(0, count).ToArray();
+            byte[] encoded = CompressPayload(block, storeRaw: false);
+            destination.Write(encoded);
+            remaining -= count;
+        }
+    }
+
     /// <summary>
     /// Assembles the inner image. <paramref name="payloads"/> are, in on-disk order, the data files followed by
     /// the block-info table payload and the metadata block. Each payload is compressed per its flags and placed
@@ -89,6 +109,8 @@ public sealed class ProsperoPs5InnerImageBuilder
         int pos = 0;
         foreach (var p in payloads)
         {
+            if (p.DataPath is not null)
+                throw new ArgumentException("File-backed payloads require BuildToFile.", nameof(payloads));
             byte[] data = CompressPayload(p.Data, p.StoreRaw);
             if (p.BlockAligned)
                 pos = AlignUp(pos, BlockSize);
@@ -126,13 +148,22 @@ public sealed class ProsperoPs5InnerImageBuilder
         long pos = 0;
         foreach (var p in payloads)
         {
-            byte[] data = CompressPayload(p.Data, p.StoreRaw);
             if (p.BlockAligned)
                 pos = AlignUpLong(pos, BlockSize);
 
             fs.Position = pos;
-            fs.Write(data, 0, data.Length);
-            pos = checked(pos + data.LongLength);
+            if (p.DataPath is not null)
+            {
+                using var input = File.OpenRead(p.DataPath);
+                if (p.StoreRaw) input.CopyTo(fs, 1024 * 1024);
+                else CompressPayloadToStream(input, fs, input.Length);
+            }
+            else
+            {
+                byte[] data = CompressPayload(p.Data, p.StoreRaw);
+                fs.Write(data);
+            }
+            pos = fs.Position;
 
             if (p.BlockAlignedAfter)
                 pos = AlignUpLong(pos, BlockSize);

@@ -8,12 +8,21 @@ existing CI/package workflow applies both fixes to every reconstructed engine.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 from pathlib import Path
-
-import naps_data_block_map_profile
 
 
 TARGET = Path("vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/ProsperoNapsLayoutBuilder.cs")
+
+
+def _load_data_block_profile():
+    profile_path = Path(__file__).resolve().parent / "naps_data_block_map_profile.py"
+    spec = importlib.util.spec_from_file_location("packizard_naps_data_block_map_profile", profile_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load NAPS data-block map profile: {profile_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def apply(root: Path) -> None:
@@ -21,7 +30,7 @@ def apply(root: Path) -> None:
 
     # Must run first: this is the structural fix for real-U-block delta overflows.
     # The partial-group patch below only handles unused slots in the terminal group.
-    naps_data_block_map_profile.apply(root)
+    _load_data_block_profile().apply(root)
 
     path = root / TARGET
     if not path.is_file():

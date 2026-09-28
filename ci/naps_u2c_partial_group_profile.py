@@ -9,7 +9,23 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from packizard_native_naps_profile import apply
+import packizard_native_naps_profile as native
+
+
+def _install_resilient_replacements() -> None:
+    original = native._replace_once
+
+    def replace_once(text: str, old: str, new: str, label: str) -> str:
+        if text.count(old) == 1:
+            return text.replace(old, new, 1)
+        if label == "native BuildImage call":
+            needle = "BuildImage(afidOrder, metaPlain"
+            replacement = "BuildImage(afidOrder, dataStream, metaPlain"
+            if text.count(needle) == 1:
+                return text.replace(needle, replacement, 1)
+        return original(text, old, new, label)
+
+    native._replace_once = replace_once
 
 
 def _fix_logical_mount_geometry(root: Path) -> None:
@@ -30,7 +46,8 @@ def main() -> None:
     parser.add_argument("--root", default="build-src")
     args = parser.parse_args()
     root = Path(args.root)
-    apply(root)
+    _install_resilient_replacements()
+    native.apply(root)
     _fix_logical_mount_geometry(root)
 
 

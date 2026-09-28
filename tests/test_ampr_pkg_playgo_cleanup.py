@@ -62,6 +62,10 @@ class AmprPkgPlayGoCleanupTests(unittest.TestCase):
             self.assertIn('ClearJsonString(updated, "versionFileUri")', builder)
             self.assertIn('ClearJsonInteger(updated, "attribute3")', builder)
             self.assertIn("This rewrite is in-memory; the source param.json is never modified.", builder)
+            self.assertIn(
+                r'var rx = new Regex("(\"" + Regex.Escape(key) + "\"\\s*:\\s*\")[^\"]*(\")");',
+                builder,
+            )
 
     def test_non_ampr_normalization_keeps_launch_metadata_path_opt_in(self):
         module = load_profile()

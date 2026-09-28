@@ -65,6 +65,9 @@ def _patch_assembler(path: Path) -> None:
             // Packizard AMPR compatibility: preserve CNT metadata in the inner image as well as
             // emitting the normal CNT payload. The direct Shadowmount/LZ tree exposes these files
             // through /app0 and some titles depend on that view during common-dialog startup.
+            // Stale PlayGo descriptors are the exception: they describe the original package's
+            // chunk layout and must never be copied into the rebuilt unified PKG image.
+            if (preserveCntMetadataInInner && IsPackizardStalePlayGoPath(fullPath)) continue;
             if (!preserveCntMetadataInInner && IsExcludedFromInner(fullPath)) continue;
             string path = temps.Create();
             using (var output = new FileStream(path, FileMode.Truncate, FileAccess.Write, FileShare.None))
@@ -101,6 +104,15 @@ def _patch_assembler(path: Path) -> None:
         if (!fullPath.StartsWith(prefix, StringComparison.Ordinal)) return false;
         string rel = fullPath.Substring(prefix.Length);
         return rel == "param.json" || PKG.ProsperoCntEntryNames.NameToId.ContainsKey(rel);
+    }
+
+    // Source PlayGo data describes the dump/original package. A rebuilt PKG has a different
+    // mount image, so carrying these descriptors into /app0/sce_sys can make PlayGo reject the
+    // package before eboot.bin is executed (for example SCE_KERNEL_ERROR_EINVAL / 0x80020016).
+    private static bool IsPackizardStalePlayGoPath(string fullPath)
+    {
+        const string prefix = "/sce_sys/playgo";
+        return fullPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
     }
 
     // AMPR/LZ4 volumes already contain independently addressable compressed chunks. Re-wrapping the
@@ -147,7 +159,7 @@ def _patch_pkg_builder(path: Path) -> None:
     new_source = '''        string sourceFolder = Path.GetFullPath(props.SourceFolder);
         bool packizardAmprProfile = IsPackizardAmprTree(sourceFolder);
         if (packizardAmprProfile)
-            log("Packizard AMPR/LZ4 compatibility profile enabled: preserving sce_sys in inner PFS and storing AMPR root payloads raw.");
+            log("Packizard AMPR/LZ4 compatibility profile enabled: preserving AMPR payloads raw, dropping stale PlayGo descriptors, and sanitizing PKG launch metadata.");
 
         // EKPFS (index 1) from content id + passcode. PS5 outer PFS uses the SHA3-256 key ladder
 '''
@@ -163,6 +175,75 @@ def _patch_pkg_builder(path: Path) -> None:
                     storeAmprCompatibilityPathsRaw: packizardAmprProfile);
 '''
     text = _replace_once(path, text, old_call, new_call, "inner assembler invocation")
+
+    old_param_reader = '''    private static byte[] ReadParamJson(string sourceFolder)
+    {
+        var path = Path.Combine(sourceFolder, "sce_sys", "param.json");
+        if (!File.Exists(path))
+            throw new FileNotFoundException("sce_sys/param.json is required to build a PS5 package.", path);
+        return NormalizeParamJson(File.ReadAllBytes(path));
+    }
+'''
+    new_param_reader = '''    private static byte[] ReadParamJson(string sourceFolder)
+    {
+        var path = Path.Combine(sourceFolder, "sce_sys", "param.json");
+        if (!File.Exists(path))
+            throw new FileNotFoundException("sce_sys/param.json is required to build a PS5 package.", path);
+        return NormalizeParamJson(File.ReadAllBytes(path), IsPackizardAmprTree(sourceFolder));
+    }
+'''
+    text = _replace_once(path, text, old_param_reader, new_param_reader, "param.json reader")
+
+    old_normalizer = '''    private static byte[] NormalizeParamJson(byte[] paramJson)
+    {
+        if (paramJson.Length == 0)
+            return paramJson;
+        string text;
+        try { text = Encoding.UTF8.GetString(paramJson); }
+        catch { return paramJson; }
+
+        string updated = PromoteZeroVersion(text, "sdkVersion");
+        updated = PromoteZeroVersion(updated, "requiredSystemSoftwareVersion");
+        return ReferenceEquals(updated, text) || updated == text ? paramJson : Encoding.UTF8.GetBytes(updated);
+    }
+'''
+    new_normalizer = '''    private static byte[] NormalizeParamJson(byte[] paramJson, bool packizardAmprProfile = false)
+    {
+        if (paramJson.Length == 0)
+            return paramJson;
+        string text;
+        try { text = Encoding.UTF8.GetString(paramJson); }
+        catch { return paramJson; }
+
+        string updated = PromoteZeroVersion(text, "sdkVersion");
+        updated = PromoteZeroVersion(updated, "requiredSystemSoftwareVersion");
+
+        if (packizardAmprProfile)
+        {
+            // The rebuilt FPKG owns its PlayGo metadata. Do not keep the source package's update URI
+            // or attribute3 flags: both can make PlayGo treat the regenerated single-image package as
+            // if it still had the original publisher chunk topology, causing an application error before
+            // /app0 is mounted. This rewrite is in-memory; the source param.json is never modified.
+            updated = ClearJsonString(updated, "versionFileUri");
+            updated = ClearJsonInteger(updated, "attribute3");
+        }
+
+        return ReferenceEquals(updated, text) || updated == text ? paramJson : Encoding.UTF8.GetBytes(updated);
+    }
+
+    private static string ClearJsonString(string json, string key)
+    {
+        var rx = new Regex("(\\\"" + Regex.Escape(key) + "\\\"\\s*:\\s*\\\")[^\\\"]*(\\\")");
+        return rx.Replace(json, "${1}${2}", 1);
+    }
+
+    private static string ClearJsonInteger(string json, string key)
+    {
+        var rx = new Regex("(\\\"" + Regex.Escape(key) + "\\\"\\s*:\\s*)(?:-?[0-9]+|\\\"(?:0x[0-9A-Fa-f]+|[0-9]+)\\\")");
+        return rx.Replace(json, "${1}0", 1);
+    }
+'''
+    text = _replace_once(path, text, old_normalizer, new_normalizer, "AMPR param.json normalization")
 
     marker = '''    /// <summary>The content-type code for a PS5 volume kind.</summary>
     public static uint ContentTypeFor(ProsperoVolumeType type) => type switch

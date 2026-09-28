@@ -220,12 +220,10 @@ def _patch_pkg_builder(path: Path) -> None:
 
         if (packizardAmprProfile)
         {
-            // The rebuilt FPKG owns its PlayGo metadata. Do not keep the source package's update URI
-            // or attribute3 flags: both can make PlayGo treat the regenerated single-image package as
-            // if it still had the original publisher chunk topology, causing an application error before
-            // /app0 is mounted. This rewrite is in-memory; the source param.json is never modified.
+            // A rebuilt FPKG does not update through the publisher URI from the source package.
+            // Clear it in-memory only. Keep attribute3 untouched: current reference tooling no longer
+            // clears that field by default because doing so also removes PS5 Pro / 120 Hz / VRR flags.
             updated = ClearJsonString(updated, "versionFileUri");
-            updated = ClearJsonInteger(updated, "attribute3");
         }
 
         return ReferenceEquals(updated, text) || updated == text ? paramJson : Encoding.UTF8.GetBytes(updated);
@@ -235,12 +233,6 @@ def _patch_pkg_builder(path: Path) -> None:
     {
         var rx = new Regex("(\\\"" + Regex.Escape(key) + "\\\"\\\\s*:\\\\s*\\\")[^\\\"]*(\\\")");
         return rx.Replace(json, "${1}${2}", 1);
-    }
-
-    private static string ClearJsonInteger(string json, string key)
-    {
-        var rx = new Regex("(\\\"" + Regex.Escape(key) + "\\\"\\\\s*:\\\\s*)(?:-?[0-9]+|\\\"(?:0x[0-9A-Fa-f]+|[0-9]+)\\\")");
-        return rx.Replace(json, "${1}0", 1);
     }
 '''
     text = _replace_once(path, text, old_normalizer, new_normalizer, "AMPR param.json normalization")

@@ -1,32 +1,35 @@
-# AMPR/LZ4 integrated PKG compatibility profile
+# Packizard AMPR/LZ4 PKG compatibility profile
 
-Packizard uses one integrated LibProsperoPKG engine for both the manual **Build PKG** page and the optional **Create PKG after LZ4 compression** stage. The compact repository reconstructs that runtime tree in CI; `ci/bootstrap_source.py` applies this profile after the pinned large-package overrides.
+Packizard uses one integrated LibProsperoPKG engine for both **Build PKG** and **Compress → PKG**. A source tree is treated as a Packizard AMPR/LZ4 tree when it contains the AMPR indexes plus at least one root `ampr_assets-*.pak` volume.
 
-## Activation
+For those trees the reconstructed engine applies a compatibility policy without changing the already-working LZ4 data itself:
 
-The profile is automatic and only activates when the prepared source root contains:
+- root AMPR index/volume files, `eboot.bin`, `sce_module/**` and `sce_sys/**` compatibility payloads are stored verbatim instead of being re-wrapped in Kraken;
+- inherited `sce_sys/playgo*` data is not copied into the rebuilt inner image;
+- source `playgo*` files are also excluded from the CNT/media pass, so original-package scenario/chunk metadata cannot be mixed with the regenerated PlayGo tables;
+- the packaged `param.json` clears `versionFileUri` in memory while preserving the source file and `attribute3`;
+- non-AMPR package builds keep the normal LibProsperoPKG behavior.
 
-- `ampr_assets.index`
-- `ampr_emu.index`
-- at least one root-level `ampr_assets-*.pak`
+## Large-title I/O and progress
 
-Non-AMPR sources retain the normal LibProsperoPKG behavior.
+AMPR volumes are immutable on-disk inputs, so the package path now passes their real source paths directly into the inner-image assembler. It no longer clones the complete AMPR tree into temporary files before writing the image. This removes a full redundant read/write pass that was especially visible on 50–150+ GiB titles.
 
-## Inner-PFS policy
+The disk-backed inner-image writer reports progress through the existing LibProsperoPKG logger, which `Packizard.PkgBridge` already forwards to Packizard. The log includes:
 
-For an AMPR tree the builder:
+- input file count and total GiB;
+- percentage and GiB written;
+- effective MiB/s;
+- estimated time remaining;
+- current `/app0` path;
+- explicit completion timing before NAPS/outer-PFS processing continues.
 
-1. keeps CNT-backed `sce_sys` files in the inner PFS as well as generating their normal CNT metadata;
-2. stores root-level AMPR volumes and indexes verbatim instead of adding a second Kraken layer;
-3. stores `sce_module/**`, `sce_sys/**`, `eboot.bin`, and `eboot.bin.bak` verbatim;
-4. leaves other files, including `Media/**`, on the normal classifier/Kraken path.
+Example:
 
-The CNT, PPR/NAPS, outer-PFS and FullDebug/FIH pipeline remains the same integrated package engine.
+```text
+Inner image input: 37 files, 114.62 GiB. AMPR direct-I/O enabled; redundant staging copy skipped.
+Inner image write: 37.4% — 42.87 / 114.62 GiB — 286.3 MiB/s — ETA 00:04:17 — /ampr_assets-0003.pak
+Inner image write complete: 114.62 GiB in 00:06:51.
+Inner image ready: 114.63 GiB; generating NAPS metadata.
+```
 
-## Why the profile is scoped
-
-Runtime testing with PPSA09806 established that simply restoring the 19 CNT-backed `sce_sys` files to `/app0` does not by itself stop the Shell/common-dialog close flow. The raw AMPR-root policy is therefore kept as an AMPR-only compatibility profile rather than changing global package behavior.
-
-## Validation target
-
-For PPSA09806, the next package should show all 82 source files in the inner tree and the nine `ampr_assets-*.pak` volumes as stored/raw rather than Kraken-compressed. On-console acceptance still requires runtime validation with the same payload set used by the known-good direct LZ mount.
+Progress reporting is throttled so the GUI remains responsive and the log is not flooded. The original two-argument `BuildToFile(payloads, outputPath)` API remains available; Packizard uses the callback overload only when it wants telemetry.

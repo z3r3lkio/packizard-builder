@@ -19,7 +19,9 @@ public readonly record struct PackizardNapsBudgetGroup(
     int MaxIndex,
     int Span,
     int StdCount,
-    int RunCount);
+    int RunCount,
+    string BaseRegion,
+    string MaxRegion);
 
 public sealed class PackizardNapsBudgetReport
 {
@@ -31,9 +33,9 @@ public sealed class PackizardNapsBudgetReport
 }
 
 /// <summary>
-/// Packizard-native NAPS generator. Its principal invariant is that DATA CblockInfo topology is
-/// proportional to logical 256 KiB U-blocks, never to file count. The engine validates every field
-/// width and every u2c group before it serializes a byte.
+/// Packizard-native NAPS planner/generator. File boundaries remain part of the format semantics,
+/// while logical mount coordinates and compressed physical coordinates are kept strictly separate.
+/// Every u2c group is budgeted before serialization; no delta is ever truncated or saturated.
 /// </summary>
 public static class PackizardNativeNapsEngine
 {
@@ -58,90 +60,116 @@ public static class PackizardNativeNapsEngine
         public string Region = "data";
     }
 
+    private readonly record struct EntryRef(int Index, long Logical, bool IsRun, string Region);
+
     public static byte[] Generate(ProsperoPs5InnerImageResult result)
     {
         ArgumentNullException.ThrowIfNull(result);
+
         long mountSize = checked(result.Ndblock * Block64K);
         long metaBase = result.MetaBaseLogical;
         long dataEnd = result.DataEndLogical;
         IReadOnlyList<PackizardInnerDataBlock> data = result.DataBlocks;
 
-        if (dataEnd < 0 || metaBase < 0 || mountSize <= 0)
-            throw new InvalidOperationException(
-                $"Packizard NAPS invalid logical geometry: dataEnd={dataEnd}, metaBase={metaBase}, mount={mountSize}.");
-        if (metaBase < dataEnd)
-            throw new InvalidOperationException(
-                $"Packizard NAPS metadata overlaps DATA: metaBase=0x{metaBase:X}, dataEnd=0x{dataEnd:X}. " +
-                "Logical mount geometry must never be derived from compressed physical DATA size.");
-        if (mountSize < metaBase)
-            throw new InvalidOperationException(
-                $"Packizard NAPS mount ends before metadata: mount=0x{mountSize:X}, metaBase=0x{metaBase:X}.");
-
-        int expectedDataBlocks = dataEnd == 0
-            ? 0
-            : checked((int)((dataEnd + UBlock - 1) / UBlock));
-        if (data.Count != expectedDataBlocks)
-            throw new InvalidOperationException(
-                $"Packizard NAPS DATA map count mismatch: {data.Count:N0}/{expectedDataBlocks:N0} " +
-                $"for logical data length {dataEnd:N0}.");
+        ValidateLogicalGeometry(dataEnd, metaBase, mountSize);
 
         var blocks = new List<Block>(data.Count + result.MetadataBlocks.Count + 8);
         long expectedLogical = 0;
-        long expectedPhysical = 0;
+        long previousPhysicalEnd = 0;
         bool? previousStored = null;
+        int previousFile = -1;
+
         for (int i = 0; i < data.Count; i++)
         {
             PackizardInnerDataBlock d = data[i];
+            if (d.UncompressedSize <= 0 || d.UncompressedSize > UBlock)
+                throw new InvalidOperationException(
+                    $"Packizard DATA block {i} has invalid logical size {d.UncompressedSize:N0}; " +
+                    "file-local blocks must be in 1..256 KiB.");
+            if (d.CompressedSize <= 0)
+                throw new InvalidOperationException(
+                    $"Packizard DATA block {i} has invalid encoded size {d.CompressedSize:N0}.");
             if (d.LogicalOffset != expectedLogical)
                 throw new InvalidOperationException(
-                    $"Packizard NAPS non-contiguous DATA logical map at block {i}: " +
-                    $"0x{d.LogicalOffset:X}/0x{expectedLogical:X}.");
-            if (d.OnDiskOffset != expectedPhysical)
+                    $"Packizard DATA logical map is not contiguous at block {i}: " +
+                    $"expected 0x{expectedLogical:X}, got 0x{d.LogicalOffset:X} " +
+                    $"(file={d.FileIndex}, block={d.BlockIndexInFile}).");
+            if (d.OnDiskOffset < previousPhysicalEnd)
                 throw new InvalidOperationException(
-                    $"Packizard NAPS non-contiguous DATA physical map at block {i}: " +
-                    $"0x{d.OnDiskOffset:X}/0x{expectedPhysical:X}.");
-            if (d.UncompressedSize != UBlock)
+                    $"Packizard DATA physical map overlaps/moves backwards at block {i}: " +
+                    $"previousEnd=0x{previousPhysicalEnd:X}, next=0x{d.OnDiskOffset:X} " +
+                    $"(file={d.FileIndex}, block={d.BlockIndexInFile}).");
+            if (d.FileStart != (d.BlockIndexInFile == 0))
                 throw new InvalidOperationException(
-                    $"Packizard DATA block {i} covers {d.UncompressedSize:N0} bytes; canonical blocks must cover 256 KiB.");
-            if (d.CompressedSize <= 0)
-                throw new InvalidOperationException($"Packizard DATA block {i} has an empty encoded span.");
+                    $"Packizard DATA file-start marker disagrees with block index at block {i}.");
+            if (!d.FileStart && d.FileIndex != previousFile)
+                throw new InvalidOperationException(
+                    $"Packizard DATA changed file without a file-start marker at block {i}: " +
+                    $"{previousFile}->{d.FileIndex}.");
 
-            bool stored = d.IsStored;
-            bool reanchor = i > 0 && (i % 11 == 0 || previousStored != stored);
+            bool physicalGap = d.OnDiskOffset != previousPhysicalEnd;
+            bool storageTransition = !d.FileStart && previousStored.HasValue && previousStored.Value != d.IsStored;
+            bool periodicReanchor = d.BlockIndexInFile > 0 && d.BlockIndexInFile % 11 == 0;
+            bool startRun = d.FileStart || physicalGap || storageTransition || periodicReanchor;
+
+            bool storedFull = d.IsStored && d.UncompressedSize == UBlock;
+            bool storedTail = d.IsStored && !storedFull;
+            long evenLength = storedFull
+                ? 0x10000
+                : storedTail
+                    ? d.UncompressedSize
+                    : d.IsMultiChunk
+                        ? d.FirstChunkCompressedSize
+                        : d.CompressedSize;
+            long streamLength = storedFull
+                ? 0x80000
+                : storedTail
+                    ? d.UncompressedSize
+                    : d.CompressedSize;
+
             blocks.Add(new Block
             {
-                StartRun = reanchor,
+                StartRun = startRun,
                 OnDiskOffset = d.OnDiskOffset,
                 LogicalOffset = d.LogicalOffset,
-                EvenChunkCompressedLength = stored
-                    ? 0x10000
-                    : d.IsMultiChunk ? d.FirstChunkCompressedSize : d.CompressedSize,
-                StreamLength = stored ? 0x80000 : d.CompressedSize,
-                Even = (byte)(stored ? 1 : 0),
+                EvenChunkCompressedLength = evenLength,
+                StreamLength = streamLength,
+                Even = (byte)(storedFull ? 1 : 0),
                 Odd = 1,
-                Kde = (byte)(stored ? 4 : 2),
+                Kde = (byte)(storedFull ? 4 : storedTail ? 0 : 2),
                 Shuffle = 0,
-                Region = d.ForceRaw ? "data/raw-forced" : stored ? "data/stored" : "data/kraken",
+                Region = d.ForceRaw
+                    ? $"data/raw/file={d.FileIndex}/block={d.BlockIndexInFile}"
+                    : d.IsStored
+                        ? $"data/stored/file={d.FileIndex}/block={d.BlockIndexInFile}"
+                        : $"data/kraken/file={d.FileIndex}/block={d.BlockIndexInFile}",
             });
 
-            expectedLogical = checked(expectedLogical + UBlock);
-            expectedPhysical = checked(expectedPhysical + d.CompressedSize);
-            previousStored = stored;
+            expectedLogical = checked(expectedLogical + d.UncompressedSize);
+            previousPhysicalEnd = checked(d.OnDiskOffset + d.CompressedSize);
+            previousStored = d.IsStored;
+            previousFile = d.FileIndex;
         }
 
-        // The final DATA block is zero-padded by PackizardNativeDataStream, so the hole starts at the
-        // next U-block instead of overlapping the last DATA Cblock at floor(dataEnd/UBlock).
-        long dataCoverageEnd = checked((long)data.Count * UBlock);
-        if (dataCoverageEnd > metaBase)
+        if (expectedLogical != dataEnd)
             throw new InvalidOperationException(
-                $"Packizard DATA coverage 0x{dataCoverageEnd:X} overlaps metadata base 0x{metaBase:X}.");
-        if (dataCoverageEnd < metaBase)
+                $"Packizard DATA logical coverage mismatch: blocks end at 0x{expectedLogical:X}, " +
+                $"DataEndLogical=0x{dataEnd:X}.");
+        if (data.Count == 0 && dataEnd != 0)
+            throw new InvalidOperationException(
+                $"Packizard DATA has no block map but DataEndLogical is 0x{dataEnd:X}.");
+
+        // Preserve the currently reverse-validated padding topology: one bare STD anchored at the
+        // block-info region and logically associated with the U-block containing dataEnd. Crucially,
+        // metaBase itself is calculated from LOGICAL DATA size, never from compressed physical size.
+        if (dataEnd < metaBase)
         {
+            long paddingStart = dataEnd & ~(UBlock - 1);
             blocks.Add(new Block
             {
                 StartRun = false,
                 OnDiskOffset = result.BlockInfoOnDiskOffset,
-                LogicalOffset = dataCoverageEnd,
+                LogicalOffset = paddingStart,
                 EvenChunkCompressedLength = 8,
                 StreamLength = 0x10,
                 Even = 0,
@@ -170,6 +198,10 @@ public static class PackizardNativeNapsEngine
         for (int i = 0; i < metaChunks.Count; i++)
         {
             ProsperoInnerMetaBlockChunk m = metaChunks[i];
+            if (m.CompressedSize <= 0 || m.UncompressedSize <= 0 || m.UncompressedSize > UBlock)
+                throw new InvalidOperationException(
+                    $"Packizard metadata block {i} has invalid geometry " +
+                    $"encoded={m.CompressedSize:N0}, logical={m.UncompressedSize:N0}.");
             int even = m.IsMultiChunk ? m.FirstChunkCompressedSize : m.CompressedSize;
             blocks.Add(new Block
             {
@@ -182,11 +214,16 @@ public static class PackizardNativeNapsEngine
                 Odd = 1,
                 Kde = (byte)(metaCompressed ? 2 : 4),
                 Shuffle = (byte)(metaCompressed && i < metaChunks.Count - 1 ? 2 : 0),
-                Region = "metadata",
+                Region = $"metadata/block={i}",
             });
             metaPhysical = checked(metaPhysical + m.CompressedSize);
             metaLogical = checked(metaLogical + m.UncompressedSize);
         }
+
+        if (metaLogical > mountSize)
+            throw new InvalidOperationException(
+                $"Packizard metadata extends beyond the logical mount: metaEnd=0x{metaLogical:X}, " +
+                $"mount=0x{mountSize:X}.");
 
         blocks.Add(new Block
         {
@@ -218,16 +255,34 @@ public static class PackizardNativeNapsEngine
             numOuterBlocks,
             fidx,
             out PackizardNapsBudgetReport budget);
+
         if (budget.MaxSpan > 255)
         {
             PackizardNapsBudgetGroup w = budget.Worst;
             throw new NotSupportedException(
                 $"Packizard NAPS budget violation before serialization: group={w.Group}, " +
-                $"ublocks={w.FirstUBlock}..{w.LastUBlock}, base={w.BaseIndex}, min={w.MinIndex}, " +
-                $"max={w.MaxIndex}, span={w.Span}, std={w.StdCount}, run={w.RunCount}, " +
-                $"numUBlocks={budget.NumUBlocks}, numCblockInfo={budget.NumCblockInfo}.");
+                $"ublocks={w.FirstUBlock}..{w.LastUBlock}, base={w.BaseIndex}({w.BaseRegion}), " +
+                $"min={w.MinIndex}, max={w.MaxIndex}({w.MaxRegion}), span={w.Span}, " +
+                $"std={w.StdCount}, run={w.RunCount}, numUBlocks={budget.NumUBlocks}, " +
+                $"numCblockInfo={budget.NumCblockInfo}.");
         }
+
         return ProsperoNapsLayout.BuildLayout(doc);
+    }
+
+    private static void ValidateLogicalGeometry(long dataEnd, long metaBase, long mountSize)
+    {
+        if (dataEnd < 0 || metaBase < 0 || mountSize <= 0)
+            throw new InvalidOperationException(
+                $"Packizard NAPS invalid logical geometry: dataEnd={dataEnd}, " +
+                $"metaBase={metaBase}, mount={mountSize}.");
+        if (metaBase < dataEnd)
+            throw new InvalidOperationException(
+                $"Packizard NAPS metadata overlaps DATA: metaBase=0x{metaBase:X}, dataEnd=0x{dataEnd:X}. " +
+                "This is the compressed-physical-vs-logical-mount geometry bug; refusing to serialize.");
+        if (mountSize < metaBase)
+            throw new InvalidOperationException(
+                $"Packizard NAPS mount ends before metadata: mount=0x{mountSize:X}, metaBase=0x{metaBase:X}.");
     }
 
     private static NapsLayoutDocument BuildDocument(
@@ -237,11 +292,14 @@ public static class PackizardNativeNapsEngine
         IReadOnlyList<long> fileLogicalOffsets,
         out PackizardNapsBudgetReport budget)
     {
-        (List<NapsCblockInfoEntry> entries, List<(int Index, long Logical, bool IsRun)> logical) = Walk(blocks);
+        (List<NapsCblockInfoEntry> entries, List<EntryRef> logical) = Walk(blocks);
         if (entries.Count > 0xFFFFFF)
             throw new NotSupportedException(
-                $"Packizard NAPS has {entries.Count:N0} CblockInfo entries; the header/base index fields only carry 24 bits.");
+                $"Packizard NAPS has {entries.Count:N0} CblockInfo entries; " +
+                "the header/base index fields only carry 24 bits.");
 
+        // Keep the currently modeled NAPS table count: floor(numUBlocks/8)+1. This yields one trailing
+        // entry for exact multiples of eight, and one partially-used final entry otherwise.
         int numGroups = (numUBlocks + 8) >> 3;
         List<NapsU2cEntry> u2c = BuildU2c(
             logical,
@@ -249,6 +307,7 @@ public static class PackizardNativeNapsEngine
             entries.Count,
             numGroups,
             out budget);
+
         var counts = new NapsLayoutCounts(
             NumFiles: fileLogicalOffsets.Count,
             CompressionType: 2,
@@ -261,12 +320,13 @@ public static class PackizardNativeNapsEngine
         var offsets = new List<NapsFileOffsetEntry>(fileLogicalOffsets.Count + 1);
         for (int i = 0; i < fileLogicalOffsets.Count; i++)
         {
-            if (fileLogicalOffsets[i] < 0 || fileLogicalOffsets[i] > 0xFFFFFFFFFFL)
+            long value = fileLogicalOffsets[i];
+            if (value < 0 || value > 0xFFFFFFFFFFL)
                 throw new NotSupportedException(
-                    $"Packizard NAPS fidx offset 0x{fileLogicalOffsets[i]:X} exceeds the 40-bit field.");
+                    $"Packizard NAPS fidx offset 0x{value:X} exceeds the 40-bit field.");
             offsets.Add(new NapsFileOffsetEntry(
                 i == fileLogicalOffsets.Count - 1 ? (byte)0x40 : (byte)0,
-                checked((ulong)fileLogicalOffsets[i])));
+                checked((ulong)value)));
         }
         offsets.Add(ProsperoNapsLayout.DecodeFileOffsetEntry(DefaultTrailer));
 
@@ -283,25 +343,21 @@ public static class PackizardNativeNapsEngine
         };
     }
 
-    private static (List<NapsCblockInfoEntry>, List<(int Index, long Logical, bool IsRun)>) Walk(
+    private static (List<NapsCblockInfoEntry> Entries, List<EntryRef> Refs) Walk(
         IReadOnlyList<Block> blocks)
     {
         var entries = new List<NapsCblockInfoEntry>(blocks.Count * 2);
-        var logical = new List<(int, long, bool)>(blocks.Count * 2);
+        var refs = new List<EntryRef>(blocks.Count * 2);
         long cursor = 0;
-        long previousLogical = -1;
 
         foreach (Block b in blocks)
         {
-            if (!b.Terminator && b.LogicalOffset < previousLogical)
-                throw new InvalidOperationException(
-                    $"Packizard NAPS block order moved backwards: 0x{b.LogicalOffset:X} after 0x{previousLogical:X} ({b.Region}).");
-            if (!b.Terminator) previousLogical = b.LogicalOffset;
-
             if (b.StartRun)
             {
                 if (b.OnDiskOffset < 0)
-                    throw new InvalidOperationException("Negative NAPS RUN physical offset.");
+                    throw new InvalidOperationException(
+                        $"Negative NAPS RUN physical offset at {b.Region}.");
+
                 uint coffEnd = checked((uint)(cursor & Mod256K));
                 long q = b.OnDiskOffset / UBlock;
                 long c256 = checked(2 * q);
@@ -316,6 +372,7 @@ public static class PackizardNativeNapsEngine
                 long baseC = checked(2 * q * UBlock);
                 long rem = b.OnDiskOffset % UBlock;
                 cursor = checked(baseC + rem);
+
                 int runIndex = entries.Count;
                 entries.Add(new NapsCblockInfoEntry
                 {
@@ -326,7 +383,7 @@ public static class PackizardNativeNapsEngine
                     KeyTableIdx = 0,
                     CoffsetStart256K = checked((uint)c256),
                 });
-                logical.Add((runIndex, b.LogicalOffset, true));
+                refs.Add(new EntryRef(runIndex, b.LogicalOffset, true, b.Region));
             }
 
             uint coffMod = checked((uint)(cursor & Mod256K));
@@ -342,11 +399,10 @@ public static class PackizardNativeNapsEngine
             {
                 if (b.EvenChunkCompressedLength <= 0)
                     throw new InvalidOperationException(
-                        $"Packizard NAPS block at 0x{b.LogicalOffset:X} has invalid even length {b.EvenChunkCompressedLength}.");
+                        $"Packizard NAPS block at 0x{b.LogicalOffset:X} ({b.Region}) has invalid " +
+                        $"even length {b.EvenChunkCompressedLength}.");
                 long rawClen = checked((b.EvenChunkCompressedLength - 1) * 2);
-                if (rawClen > ClenEvenCap)
-                    rawClen = ClenEvenCap;
-                clen = checked((uint)rawClen);
+                clen = checked((uint)Math.Min(rawClen, ClenEvenCap));
             }
 
             int stdIndex = entries.Count;
@@ -362,26 +418,26 @@ public static class PackizardNativeNapsEngine
                 KdePredictor = b.Terminator ? (byte)0 : b.Kde,
                 ShuffleIdx = b.Terminator ? (byte)0 : b.Shuffle,
             });
-            logical.Add((stdIndex, b.LogicalOffset, false));
-            if (!b.Terminator) cursor = checked(cursor + b.StreamLength);
+            refs.Add(new EntryRef(stdIndex, b.LogicalOffset, false, b.Region));
+
+            if (!b.Terminator)
+                cursor = checked(cursor + b.StreamLength);
         }
 
-        return (entries, logical);
+        return (entries, refs);
     }
 
     private static List<NapsU2cEntry> BuildU2c(
-        List<(int Index, long Logical, bool IsRun)> logical,
+        List<EntryRef> refs,
         int numUBlocks,
         int numCblockInfo,
         int numGroups,
         out PackizardNapsBudgetReport report)
     {
-        // I[u] = the first STD CblockInfo whose logical start is at or beyond u*256KiB.
-        // RUN records occupy the same CblockInfo index space, so their presence naturally increases
-        // deltas, but a RUN is never itself selected as I[u].
-        (int Index, long Logical)[] std = logical
+        // I[u] = index of the first STD whose logical start is >= u*256KiB. RUN records share the
+        // CblockInfo index space but are never selected directly by u2c.
+        EntryRef[] std = refs
             .Where(x => !x.IsRun)
-            .Select(x => (x.Index, x.Logical))
             .OrderBy(x => x.Logical)
             .ThenBy(x => x.Index)
             .ToArray();
@@ -390,13 +446,23 @@ public static class PackizardNativeNapsEngine
 
         int terminator = numCblockInfo - 1;
         int[] first = new int[numUBlocks];
+        string[] region = new string[numUBlocks];
         int p = 0;
         for (int u = 0; u < numUBlocks; u++)
         {
             long target = checked((long)u * UBlock);
             while (p < std.Length && std[p].Logical < target)
                 p++;
-            first[u] = p < std.Length ? std[p].Index : terminator;
+            if (p < std.Length)
+            {
+                first[u] = std[p].Index;
+                region[u] = std[p].Region;
+            }
+            else
+            {
+                first[u] = terminator;
+                region[u] = "terminator";
+            }
         }
 
         var groups = new List<PackizardNapsBudgetGroup>(numGroups);
@@ -406,7 +472,9 @@ public static class PackizardNativeNapsEngine
             if (firstU >= numUBlocks)
             {
                 groups.Add(new PackizardNapsBudgetGroup(
-                    g, firstU, firstU - 1, terminator, terminator, terminator, 0, 0, 0));
+                    g, firstU, firstU - 1,
+                    terminator, terminator, terminator, 0, 0, 0,
+                    "terminator", "terminator"));
                 continue;
             }
 
@@ -414,17 +482,25 @@ public static class PackizardNativeNapsEngine
             int baseIndex = first[firstU];
             int min = baseIndex;
             int max = baseIndex;
+            int maxU = firstU;
             for (int u = firstU; u <= lastU; u++)
             {
-                min = Math.Min(min, first[u]);
-                max = Math.Max(max, first[u]);
+                if (first[u] < min)
+                    min = first[u];
+                if (first[u] > max)
+                {
+                    max = first[u];
+                    maxU = u;
+                }
             }
-            int lo = min;
-            int hi = max;
-            int runCount = logical.Count(x => x.IsRun && x.Index >= lo && x.Index <= hi);
-            int stdCount = logical.Count(x => !x.IsRun && x.Index >= lo && x.Index <= hi);
+
+            int runCount = refs.Count(x => x.IsRun && x.Index >= min && x.Index <= max);
+            int stdCount = refs.Count(x => !x.IsRun && x.Index >= min && x.Index <= max);
             groups.Add(new PackizardNapsBudgetGroup(
-                g, firstU, lastU, baseIndex, min, max, max - baseIndex, stdCount, runCount));
+                g, firstU, lastU,
+                baseIndex, min, max, max - baseIndex,
+                stdCount, runCount,
+                region[firstU], region[maxU]));
         }
 
         report = new PackizardNapsBudgetReport
@@ -434,20 +510,24 @@ public static class PackizardNativeNapsEngine
             Groups = groups,
         };
 
-        PackizardNapsBudgetGroup bad = groups.FirstOrDefault(x => x.Span > 255 || x.MinIndex < x.BaseIndex);
+        PackizardNapsBudgetGroup bad = groups.FirstOrDefault(
+            x => x.Span > 255 || x.MinIndex < x.BaseIndex);
         if (bad.Span > 255 || bad.MinIndex < bad.BaseIndex)
             throw new NotSupportedException(
                 $"Packizard NAPS u2c group overflow/non-monotonicity: group={bad.Group}, " +
-                $"ublocks={bad.FirstUBlock}..{bad.LastUBlock}, base={bad.BaseIndex}, min={bad.MinIndex}, " +
-                $"max={bad.MaxIndex}, span={bad.Span}, std={bad.StdCount}, run={bad.RunCount}, " +
-                $"numCblockInfo={numCblockInfo}.");
+                $"ublocks={bad.FirstUBlock}..{bad.LastUBlock}, " +
+                $"base={bad.BaseIndex}({bad.BaseRegion}), min={bad.MinIndex}, " +
+                $"max={bad.MaxIndex}({bad.MaxRegion}), span={bad.Span}, " +
+                $"std={bad.StdCount}, run={bad.RunCount}, numCblockInfo={numCblockInfo}. " +
+                "This is a topology failure; Packizard will not clamp or modulo the delta.");
 
         static byte DeltaByte(int value, int group, int ublock)
         {
             if (value is >= 0 and <= 255)
                 return (byte)value;
             throw new NotSupportedException(
-                $"Packizard NAPS u2c delta {value} is not encodable (group={group}, ublock={ublock}).");
+                $"Packizard NAPS u2c delta {value} is not encodable " +
+                $"(group={group}, ublock={ublock}); refusing lossy serialization.");
         }
 
         var result = new List<NapsU2cEntry>(numGroups);
@@ -472,8 +552,6 @@ public static class PackizardNativeNapsEngine
             for (int j = 1; j < 8; j++)
             {
                 int u = groupStart + j;
-                // Unused slots in a partial final group are zero. They do not describe a real U-block
-                // and therefore must never be forced to point at a distant terminator.
                 deltas[j - 1] = u < numUBlocks
                     ? DeltaByte(first[u] - baseIndex, g, u)
                     : (byte)0;

@@ -351,7 +351,8 @@ using System.IO;
                     string current = string.IsNullOrEmpty(currentPath) ? string.Empty : $" — {currentPath}";
                     logger($"Inner image write: {pct:F1}% — {completed / (1024d * 1024d * 1024d):F2} / {total / (1024d * 1024d * 1024d):F2} GiB — {mibPerSecond:F1} MiB/s — ETA {eta}{current}");
                 });
-            logger?.Invoke($"Inner image write complete: {written / (1024d * 1024d * 1024d):F2} GiB in {imageWriteWatch.Elapsed:hh\\:mm\\:ss}.");
+            string elapsed = imageWriteWatch.Elapsed.ToString(@"hh\\:mm\\:ss");
+            logger?.Invoke($"Inner image write complete: {written / (1024d * 1024d * 1024d):F2} GiB in {elapsed}.");
             if (written != imageLength)
 '''
     text = _replace_once(path, text, old_write, new_write, "disk-backed inner image progress")

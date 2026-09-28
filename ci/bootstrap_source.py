@@ -96,6 +96,17 @@ def _apply_large_pkg_overrides(root: Path) -> None:
 
     print(f"Applied {len(targets)} LibProsperoPKG large-package streaming overrides")
 
+    # Apply the Packizard-specific AMPR/LZ4 package policy after the generic upstream
+    # streaming overrides. This keeps manual Build PKG and Compress -> PKG on the same
+    # reconstructed engine while leaving non-AMPR package builds unchanged.
+    ampr_profile_path = Path(__file__).resolve().parent / "ampr_pkg_profile.py"
+    ampr_spec = importlib.util.spec_from_file_location("packizard_ampr_pkg_profile", ampr_profile_path)
+    if ampr_spec is None or ampr_spec.loader is None:
+        raise RuntimeError(f"Cannot load AMPR PKG compatibility profile: {ampr_profile_path}")
+    ampr_profile = importlib.util.module_from_spec(ampr_spec)
+    ampr_spec.loader.exec_module(ampr_profile)
+    ampr_profile.apply(root)
+
 
 def _stabilize_generated_packaging(root: Path) -> None:
     """Apply packaging-only fixes to matrix build jobs.

@@ -13,6 +13,7 @@ from pathlib import Path
 
 
 TARGET = Path("vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/ProsperoNapsLayoutBuilder.cs")
+ASSEMBLER = Path("vendor/LibProsperoPKG/src/LibProsperoPkg/PFS/ProsperoPs5InnerImageAssembler.cs")
 
 
 def _load_data_block_profile():
@@ -25,12 +26,27 @@ def _load_data_block_profile():
     return module
 
 
+def _normalize_readonly_placement(root: Path) -> None:
+    """Avoid a C# struct field-initializer requirement while keeping assembler-owned maps non-null."""
+    path = root / ASSEMBLER
+    if not path.is_file():
+        return
+    text = path.read_text(encoding="utf-8")
+    old = '''    public IReadOnlyList<ProsperoInnerDataBlockChunk> CompressedBlocks { get; init; }\n        = Array.Empty<ProsperoInnerDataBlockChunk>();\n'''
+    new = '''    public IReadOnlyList<ProsperoInnerDataBlockChunk> CompressedBlocks { get; init; }\n'''
+    if old in text:
+        path.write_text(text.replace(old, new, 1), encoding="utf-8", newline="\n")
+    elif new not in text:
+        raise RuntimeError(f"Could not locate per-block placement property in {path}")
+
+
 def apply(root: Path) -> None:
     root = Path(root)
 
     # Must run first: this is the structural fix for real-U-block delta overflows.
     # The partial-group patch below only handles unused slots in the terminal group.
     _load_data_block_profile().apply(root)
+    _normalize_readonly_placement(root)
 
     path = root / TARGET
     if not path.is_file():

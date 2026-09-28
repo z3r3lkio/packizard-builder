@@ -78,8 +78,8 @@ class AmprPkgPlayGoCleanupTests(unittest.TestCase):
                 builder,
             )
             self.assertIn('ClearJsonString(updated, "versionFileUri")', builder)
-            self.assertIn('ClearJsonInteger(updated, "attribute3")', builder)
-            self.assertIn("This rewrite is in-memory; the source param.json is never modified.", builder)
+            self.assertNotIn("ClearJsonInteger", builder)
+            self.assertIn("Keep attribute3 untouched", builder)
             # The generated C# string literal must contain two backslashes so the regex engine
             # receives \s; a single \s in C# source is an invalid string escape and will not compile.
             self.assertIn(r"\\s*:\\s*", builder)

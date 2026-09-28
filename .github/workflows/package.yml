@@ -73,6 +73,8 @@ jobs:
           sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0
       - name: Reconstruct complete source tree
         run: python ci/bootstrap_source.py --output build-src
+      - name: Apply NAPS large-layout compatibility
+        run: python ci/naps_u2c_partial_group_profile.py --root build-src
       - name: Build and probe integrated PKG engine
         working-directory: build-src
         run: |
@@ -92,6 +94,7 @@ jobs:
           grep -F 'BuildToFile(IReadOnlyList<ProsperoPs5InnerPayload>' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PFS/ProsperoPs5InnerImageBuilder.cs
           grep -F 'BuildForPackageToFile(' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PFS/ProsperoOuterPfsBuilder.cs
           grep -F 'BuildDebugSiSegmentFromFile(' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/ProsperoSiArchive.cs
+          grep -F 'Packizard terminal partial-group u2c fix' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/ProsperoNapsLayoutBuilder.cs
           if grep -R -Fq 'LibProsperoPkg.Gui.exe' build-src/core build-src/gui build-src/utils; then
             echo "External PKG GUI launcher leaked back into runtime code" >&2
             exit 1
@@ -175,6 +178,9 @@ jobs:
 
       - name: Reconstruct complete source tree
         run: python ci/bootstrap_source.py --output build-src
+
+      - name: Apply NAPS large-layout compatibility
+        run: python ci/naps_u2c_partial_group_profile.py --root build-src
 
       - name: Build Windows package
         if: matrix.os == 'windows'

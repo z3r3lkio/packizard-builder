@@ -32,7 +32,7 @@ class PackizardNativeNapsSourceTests(unittest.TestCase):
         text = NAPS.read_text(encoding="utf-8")
         self.assertIn("PackizardNapsBudgetReport", text)
         self.assertIn("span={bad.Span}", text)
-        self.assertIn("baseRegion", text.lower())
+        self.assertIn("baseregion", text.lower())
         self.assertIn("0xFFFFFF", text)
         self.assertIn("0xFFFFFFFFFFL", text)
         self.assertIn("DeltaByte", text)

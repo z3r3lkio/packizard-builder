@@ -14,22 +14,30 @@ class PackizardNativeNapsSourceTests(unittest.TestCase):
         text = SHIM.read_text(encoding="utf-8")
         self.assertIn("import packizard_native_naps_profile as native", text)
         self.assertIn("native.apply(root)", text)
+        self.assertIn("_fix_file_local_data_geometry(root)", text)
+        self.assertIn("_fix_naps_meta_geometry(root)", text)
         self.assertIn("_fix_logical_mount_geometry(root)", text)
         self.assertNotIn("numCblockInfo - 1", text)
 
-    def test_native_data_stream_is_file_count_independent(self):
+    def test_native_data_stream_preserves_file_boundaries(self):
         text = DATA.read_text(encoding="utf-8")
-        self.assertIn("exactly one Kraken/stored decision per U-block", text)
-        self.assertIn("PackizardInnerDataBlock", text)
-        self.assertIn("FlushBlock", text)
+        self.assertIn("A block never crosses a file", text)
+        self.assertIn("FileIndex", text)
+        self.assertIn("BlockIndexInFile", text)
+        self.assertIn("FileStart", text)
+        self.assertIn("WholeBlockRaw", text)
         self.assertIn("ForceRaw", text)
 
-    def test_native_naps_has_budget_and_field_guards(self):
+    def test_native_naps_has_budget_geometry_and_field_guards(self):
         text = NAPS.read_text(encoding="utf-8")
         self.assertIn("PackizardNapsBudgetReport", text)
         self.assertIn("span={bad.Span}", text)
+        self.assertIn("baseRegion", text.lower())
         self.assertIn("0xFFFFFF", text)
+        self.assertIn("0xFFFFFFFFFFL", text)
         self.assertIn("DeltaByte", text)
+        self.assertIn("metadata overlaps DATA", text)
+        self.assertIn("This is a topology failure", text)
         self.assertNotIn("% 256", text)
 
     def test_profile_bypasses_legacy_naps_generator(self):
@@ -41,6 +49,9 @@ class PackizardNativeNapsSourceTests(unittest.TestCase):
     def test_shim_separates_logical_mount_from_physical_data_size(self):
         text = SHIM.read_text(encoding="utf-8")
         self.assertIn("dataStream.LogicalLength", text)
+        self.assertIn("WholeBlockRaw = f.WholeBlockRaw", text)
+        self.assertIn("b.FileIndex == fileIndex", text)
+        self.assertIn("inner.DataEndLogical", text)
         self.assertIn("_ensure_native_image_writer", text)
         self.assertIn("BuildNativeImage", text)
         self.assertIn("dataStream.EncodedLength", text)

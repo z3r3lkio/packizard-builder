@@ -114,14 +114,36 @@ try
     Check(memory.Image.AsSpan().SequenceEqual(File.ReadAllBytes(streamed.ImageFilePath!)), "Inner image differs");
     Check(memory.ImageLength == streamed.ImageLength, "Inner image length differs");
     CheckDataBlocksEquivalent(memory.DataBlocks, streamed.DataBlocks);
-    Check(PackizardNativeNapsEngine.Generate(memory).AsSpan().SequenceEqual(
-        PackizardNativeNapsEngine.Generate(streamed)), "Native NAPS differs for a file-backed image");
-    File.Delete(streamed.ImageFilePath!);
-    Console.WriteLine("PASS native inner image + NAPS equivalence");
+    byte[] memoryNaps = PackizardNativeNapsEngine.Generate(memory);
+    Check(memoryNaps.AsSpan().SequenceEqual(PackizardNativeNapsEngine.Generate(streamed)),
+        "Native NAPS differs for a file-backed image");
 
-    // The missing regression: a huge number of file boundaries inside only a handful of U-blocks.
-    // The legacy file-centric topology could create thousands of CblockInfo records here.  Native DATA
-    // must remain O(U-blocks), not O(files).
+    // Stronger than a layout round-trip: reconstruct the mount from the exact inner image + NAPS and
+    // compare every source file byte-for-byte. This catches invalid cross-file block semantics,
+    // cursor/run mistakes and logical/physical coordinate confusion.
+    var rebuilt = ProsperoPs5InnerImageReader.ReconstructMount(
+        memory.Image,
+        memoryNaps,
+        memory.Ndblock * 0x10000L);
+    var rebuiltFiles = ProsperoPs5InnerImageReader.ReadFileTree(rebuilt.Mount, rebuilt.SuperblockOffset)
+        .ToDictionary(f => f.Path, StringComparer.Ordinal);
+    foreach (ProsperoPs5InnerFile expected in inputs)
+    {
+        string key = expected.Path.TrimStart('/');
+        Check(rebuiltFiles.TryGetValue(key, out ProsperoPs5InnerFileEntry? actual),
+            $"Reconstructed mount is missing {key}");
+        Check(actual!.Size == expected.Data.LongLength,
+            $"Reconstructed size differs for {key}: {actual.Size}/{expected.Data.LongLength}");
+        Check(rebuilt.Mount.AsSpan((int)actual.LogicalOffset, checked((int)actual.Size))
+                .SequenceEqual(expected.Data),
+            $"Reconstructed bytes differ for {key}");
+    }
+    File.Delete(streamed.ImageFilePath!);
+    Console.WriteLine("PASS native inner image + NAPS + reconstructed mount equivalence");
+
+    // Deliberately hostile file density: thousands of file boundaries in only a handful of logical
+    // U-blocks. If shared-U-block encoding is not semantically valid the reconstruction test above will
+    // fail before this optimization is allowed to ship.
     const int tinyFileCount = 20000;
     const int tinySize = 64;
     var tinySources = new List<PackizardLogicalDataSource>(tinyFileCount);
@@ -153,7 +175,8 @@ try
         $"Dense-file NAPS produced {tinyDoc.CblockInfos.Count} CblockInfo records for {tinyFileCount} files");
     Console.WriteLine($"PASS {tinyFileCount:N0} tiny files -> {tiny.Blocks.Count} DATA U-blocks without u2c density overflow");
 
-    // Exercise 24-bit next-group bases well beyond 0xffff without manufacturing file boundaries.
+    // Exercise the upper byte of the uint24 base directly. The previous phase-shifted implementation
+    // incorrectly treated bytes 4..6 as a second base; native u2c now has exactly one base + seven deltas.
     const int wideCount = 65552;
     var wideBlocks = new PackizardInnerDataBlock[wideCount];
     long widePhysical = 0;
@@ -167,18 +190,21 @@ try
     }
     var wideSynthetic = Synthetic(wideBlocks, (long)wideCount * 0x40000, widePhysical);
     var wideDoc = ProsperoNapsLayout.Parse(PackizardNativeNapsEngine.Generate(wideSynthetic));
-    bool sawHighBase = false;
+    Check(wideDoc.CblockInfoOffsetByUblock.Any(entry => entry.InfoOffset9BBase > 0xFFFF),
+        "Native NAPS never exercised the upper byte of a 24-bit u2c base");
     foreach (NapsU2cEntry entry in wideDoc.CblockInfoOffsetByUblock)
     {
-        byte[] raw = ProsperoNapsLayout.EncodeU2cEntry(entry);
-        int nextBase = raw[4] | raw[5] << 8 | raw[6] << 16;
-        if (nextBase > 0xffff) sawHighBase = true;
+        byte[] encoded = ProsperoNapsLayout.EncodeU2cEntry(entry);
+        NapsU2cEntry decoded = ProsperoNapsLayout.DecodeU2cEntry(encoded);
+        Check(decoded.InfoOffset9BBase == entry.InfoOffset9BBase,
+            "u2c uint24 base failed encode/decode round-trip");
+        Check(decoded.DeltaFromBase.SequenceEqual(entry.DeltaFromBase),
+            "u2c seven-delta vector failed encode/decode round-trip");
     }
-    Check(sawHighBase, "Native NAPS never exercised the upper byte of a 24-bit u2c base");
-    Console.WriteLine("PASS native u2c 24-bit bases beyond 0xffff");
+    Console.WriteLine("PASS native u2c uint24 base + seven deltas beyond 0xffff");
 
-    // Verify the exact bug behind the 19945 failure cannot recur: logical metadata geometry must be
-    // based on logical DATA length, not compressed physical length.
+    // Verify the exact geometry class implicated by the 19945 failure: logical metadata placement must
+    // be independent from compressed physical DATA size.
     byte[] veryCompressible = new byte[24 * 0x40000];
     var geometry = assembler.Build(new[]
     {
@@ -188,7 +214,8 @@ try
         $"Metadata overlaps logical DATA: meta=0x{geometry.MetaBaseLogical:X}, dataEnd=0x{geometry.DataEndLogical:X}");
     Check(geometry.ImageLength < geometry.MetaBaseLogical,
         "Geometry regression did not actually exercise physical compression below logical mount size");
-    Check(PackizardNativeNapsEngine.Generate(geometry).Length > 0, "Native NAPS failed on compressed/logical geometry split");
+    Check(PackizardNativeNapsEngine.Generate(geometry).Length > 0,
+        "Native NAPS failed on compressed/logical geometry split");
     if (geometry.ImageFilePath is not null) File.Delete(geometry.ImageFilePath);
     Console.WriteLine("PASS logical metadata geometry is independent of compressed physical size");
 
@@ -204,7 +231,8 @@ try
         throw new Exception("Expected source failure");
     }
     catch (IOException e) when (e.Message == "injected source failure") { }
-    Check(!Directory.EnumerateFiles(scratch, "libprospero-*.tmp").Any(), "Source failure leaked a temporary file");
+    Check(!Directory.EnumerateFiles(scratch, "libprospero-*.tmp").Any(),
+        "Source failure leaked a temporary file");
     Console.WriteLine("PASS source failure cleanup");
 
     var outerFiles = new[]
@@ -212,10 +240,15 @@ try
         new ProsperoOuterFile { Name = "pfs_image.dat", Data = sample, Signed = false },
         new ProsperoOuterFile { Name = "naps_pkg_layout.dat", Data = new byte[100], Signed = true },
     };
-    var parameters = new ProsperoOuterPfsBuildParameters { Seed = new byte[16], TimestampSeconds = 0 };
+    var parameters = new ProsperoOuterPfsBuildParameters
+    {
+        Seed = new byte[16],
+        TimestampSeconds = 0,
+    };
     var outerMemory = ProsperoOuterPfsBuilder.BuildForPackage(outerFiles, parameters, new byte[32]);
     string outerPath = Path.Combine(scratch, "outer.img");
-    var outerStreamed = ProsperoOuterPfsBuilder.BuildForPackageToFile(outerFiles, parameters, new byte[32], outerPath);
+    var outerStreamed = ProsperoOuterPfsBuilder.BuildForPackageToFile(
+        outerFiles, parameters, new byte[32], outerPath);
     Check(outerMemory.Ciphertext.AsSpan().SequenceEqual(File.ReadAllBytes(outerPath)), "Outer image differs");
     Check(outerMemory.ImageDigests.AsSpan().SequenceEqual(outerStreamed.ImageDigests), "Outer digests differ");
     Console.WriteLine("PASS outer image and digest equivalence");
@@ -240,7 +273,8 @@ try
             throw new Exception($"Expected failure at {stage}");
         }
         catch (IOException e) when (e.Message == "injected package failure") { }
-        Check(!Directory.EnumerateFiles(scratch, "libprospero-*.tmp").Any(), $"Temporary file leaked at {stage}");
+        Check(!Directory.EnumerateFiles(scratch, "libprospero-*.tmp").Any(),
+            $"Temporary file leaked at {stage}");
     }
     Console.WriteLine("PASS cleanup after package failure callbacks");
 
@@ -258,8 +292,12 @@ try
         long allocatedBefore = GC.GetTotalAllocatedBytes();
         var large = assembler.Build(new[]
         {
-            new ProsperoPs5InnerFile { Path = "/large.bin", DataPath = largePath,
-                Policy = ProsperoInnerFilePolicy.StoreVerbatim }
+            new ProsperoPs5InnerFile
+            {
+                Path = "/large.bin",
+                DataPath = largePath,
+                Policy = ProsperoInnerFilePolicy.StoreVerbatim,
+            }
         });
         Check(large.ImageLength > int.MaxValue && large.Image.Length == 0, "Large image was not streamed");
         Check(large.Placements[0].UncompressedSize == length, "64-bit source length was truncated");
@@ -267,7 +305,8 @@ try
             "Large DATA U-block count is incorrect");
         Check(GC.GetTotalAllocatedBytes() - allocatedBefore < 512L * 1024 * 1024,
             "Large input unexpectedly allocated payload-sized buffers");
-        Check(PackizardNativeNapsEngine.Generate(large).Length > 0, "Large native NAPS is empty");
+        Check(PackizardNativeNapsEngine.Generate(large).Length > 0,
+            "Large native NAPS is empty");
         File.Delete(large.ImageFilePath!);
         Console.WriteLine("PASS single file larger than 2 GiB through native DATA/NAPS");
     }

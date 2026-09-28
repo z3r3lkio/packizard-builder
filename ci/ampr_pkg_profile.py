@@ -233,13 +233,13 @@ def _patch_pkg_builder(path: Path) -> None:
 
     private static string ClearJsonString(string json, string key)
     {
-        var rx = new Regex("(\\\"" + Regex.Escape(key) + "\\\"\\s*:\\s*\\\")[^\\\"]*(\\\")");
+        var rx = new Regex("(\\\"" + Regex.Escape(key) + "\\\"\\\\s*:\\\\s*\\\")[^\\\"]*(\\\")");
         return rx.Replace(json, "${1}${2}", 1);
     }
 
     private static string ClearJsonInteger(string json, string key)
     {
-        var rx = new Regex("(\\\"" + Regex.Escape(key) + "\\\"\\s*:\\s*)(?:-?[0-9]+|\\\"(?:0x[0-9A-Fa-f]+|[0-9]+)\\\")");
+        var rx = new Regex("(\\\"" + Regex.Escape(key) + "\\\"\\\\s*:\\\\s*)(?:-?[0-9]+|\\\"(?:0x[0-9A-Fa-f]+|[0-9]+)\\\")");
         return rx.Replace(json, "${1}0", 1);
     }
 '''

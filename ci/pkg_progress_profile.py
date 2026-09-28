@@ -136,8 +136,10 @@ using System.IO;
             if (progress is null) return;
             long now = progressWatch.ElapsedMilliseconds;
             int percent = totalWork <= 0 ? 100 : (int)Math.Min(100L, workDone * 100L / totalWork);
-            if (!force && now - lastProgressMs < 1000 && percent == lastProgressPercent) return;
-            if (!force && now - lastProgressMs < 3000 && percent == lastProgressPercent) return;
+            // At most one line per second, plus a 3-second heartbeat if the integer percentage
+            // has not advanced (large files / slow disks). This keeps the GUI informative without spam.
+            if (!force && now - lastProgressMs < 1000) return;
+            if (!force && percent == lastProgressPercent && now - lastProgressMs < 3000) return;
             lastProgressMs = now;
             lastProgressPercent = percent;
             progress(workDone, totalWork, currentPath);
@@ -296,15 +298,31 @@ using System.IO;
 '''
     text = _replace_once(path, text, old_build_sig, new_build_sig, "assembler Build logger parameter")
 
-    old_payload = '''            var p = new ProsperoPs5InnerPayload
-            {
-                Data = f.OnDiskData ?? Array.Empty<byte>(),
+    old_build_image_call = '''        byte[] image = BuildImage(afidOrder, metaPlain, out long blockInfoOnDisk, out long metadataOnDisk,
+            out byte[] compressedMeta, out var metaBlocks, out string? imageFilePath, out long imageLength, temps);
+'''
+    new_build_image_call = '''        byte[] image = BuildImage(afidOrder, metaPlain, out long blockInfoOnDisk, out long metadataOnDisk,
+            out byte[] compressedMeta, out var metaBlocks, out string? imageFilePath, out long imageLength, temps, logger);
+'''
+    text = _replace_once(path, text, old_build_image_call, new_build_image_call, "BuildImage logger handoff")
+
+    old_build_image_sig = '''    private byte[] BuildImage(List<FileNode> afidOrder, byte[] metaPlain,
+        out long blockInfoOnDisk, out long metadataOnDisk, out byte[] compressedMeta,
+        out IReadOnlyList<ProsperoInnerMetaBlockChunk> metaBlocks,
+        out string? imageFilePath, out long imageLength, ProsperoBuildTempFiles temps)
+'''
+    new_build_image_sig = '''    private byte[] BuildImage(List<FileNode> afidOrder, byte[] metaPlain,
+        out long blockInfoOnDisk, out long metadataOnDisk, out byte[] compressedMeta,
+        out IReadOnlyList<ProsperoInnerMetaBlockChunk> metaBlocks,
+        out string? imageFilePath, out long imageLength, ProsperoBuildTempFiles temps, Action<string>? logger)
+'''
+    text = _replace_once(path, text, old_build_image_sig, new_build_image_sig, "BuildImage logger parameter")
+
+    old_payload = '''                Data = f.OnDiskData ?? Array.Empty<byte>(),
                 DataPath = f.OnDiskPath,
                 StoreRaw = true,
 '''
-    new_payload = '''            var p = new ProsperoPs5InnerPayload
-            {
-                Data = f.OnDiskData ?? Array.Empty<byte>(),
+    new_payload = '''                Data = f.OnDiskData ?? Array.Empty<byte>(),
                 DataPath = f.OnDiskPath,
                 DisplayName = f.FullPath,
                 StoreRaw = true,

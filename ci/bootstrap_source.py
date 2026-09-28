@@ -107,6 +107,16 @@ def _apply_large_pkg_overrides(root: Path) -> None:
     ampr_spec.loader.exec_module(ampr_profile)
     ampr_profile.apply(root)
 
+    # Add direct-I/O and progress telemetry last, because it patches the already-AMPR-aware
+    # assembler signature and routes those messages through the existing bridge logger.
+    progress_profile_path = Path(__file__).resolve().parent / "pkg_progress_profile.py"
+    progress_spec = importlib.util.spec_from_file_location("packizard_pkg_progress_profile", progress_profile_path)
+    if progress_spec is None or progress_spec.loader is None:
+        raise RuntimeError(f"Cannot load PKG progress profile: {progress_profile_path}")
+    progress_profile = importlib.util.module_from_spec(progress_spec)
+    progress_spec.loader.exec_module(progress_profile)
+    progress_profile.apply(root)
+
 
 def _stabilize_generated_packaging(root: Path) -> None:
     """Apply packaging-only fixes to matrix build jobs.

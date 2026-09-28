@@ -6,6 +6,26 @@ static void Check(bool condition, string message)
     if (!condition) throw new Exception(message);
 }
 
+static void CheckPlacementsEquivalent(
+    IReadOnlyList<ProsperoPs5InnerPlacement> left,
+    IReadOnlyList<ProsperoPs5InnerPlacement> right)
+{
+    Check(left.Count == right.Count, "Placement count differs");
+    for (int i = 0; i < left.Count; i++)
+    {
+        var a = left[i];
+        var b = right[i];
+        Check(a.OnDiskOffset == b.OnDiskOffset, $"Placement {i} on-disk offset differs");
+        Check(a.LogicalOffset == b.LogicalOffset, $"Placement {i} logical offset differs");
+        Check(a.OnDiskSize == b.OnDiskSize, $"Placement {i} on-disk size differs");
+        Check(a.UncompressedSize == b.UncompressedSize, $"Placement {i} logical size differs");
+        Check(a.StoreRaw == b.StoreRaw, $"Placement {i} storage policy differs");
+        Check(a.CompressedBlocks.Count == b.CompressedBlocks.Count, $"Placement {i} block-map count differs");
+        for (int j = 0; j < a.CompressedBlocks.Count; j++)
+            Check(a.CompressedBlocks[j].Equals(b.CompressedBlocks[j]), $"Placement {i} block-map entry {j} differs");
+    }
+}
+
 string scratch = Path.Combine(Path.GetTempPath(), $"packizard-regression-{Guid.NewGuid():N}");
 Directory.CreateDirectory(scratch);
 string? oldTmp = Environment.GetEnvironmentVariable("TMP");
@@ -16,7 +36,8 @@ Environment.SetEnvironmentVariable("TEMP", scratch);
 Environment.SetEnvironmentVariable("TMPDIR", scratch);
 try
 {
-    // Compare the exact bytes at block boundaries, including a short final block.
+    // Compare the exact bytes at block boundaries and verify that the streaming path captures the
+    // same per-256KiB geometry that NAPS later consumes.
     foreach (int size in new[] { 0, 1, 0x3ffff, 0x40000, 0x40001, 0x80017 })
     {
         byte[] data = new byte[size];
@@ -25,10 +46,15 @@ try
         byte[] expected = ProsperoPs5InnerImageBuilder.CompressPayload(data, false);
         using var source = new MemoryStream(data);
         using var output = new MemoryStream();
-        ProsperoPs5InnerImageBuilder.CompressPayloadToStream(source, output, data.LongLength);
+        var blockMap = new List<ProsperoInnerDataBlockChunk>();
+        ProsperoPs5InnerImageBuilder.CompressPayloadToStream(source, output, data.LongLength, blockMap);
         Check(expected.AsSpan().SequenceEqual(output.ToArray()), $"Compression differs at {size} bytes");
+        int expectedBlocks = size == 0 ? 0 : (size + 0x3ffff) / 0x40000;
+        Check(blockMap.Count == expectedBlocks, $"Block-map count differs at {size} bytes");
+        Check(blockMap.Sum(b => (long)b.UncompressedSize) == size, $"Block-map logical size differs at {size} bytes");
+        Check(blockMap.Sum(b => (long)b.CompressedSize) == output.Length, $"Block-map stored size differs at {size} bytes");
     }
-    Console.WriteLine("PASS block compression equivalence (6 boundary sizes)");
+    Console.WriteLine("PASS block compression equivalence + captured per-block geometry (6 boundary sizes)");
 
     byte[] sample = new byte[0x40017];
     new Random(17).NextBytes(sample);
@@ -50,12 +76,13 @@ try
     Check(streamed.ImageFilePath is not null && streamed.Image.Length == 0, "Expected a file-backed image");
     Check(memory.Image.AsSpan().SequenceEqual(File.ReadAllBytes(streamed.ImageFilePath!)), "Inner image differs");
     Check(memory.ImageLength == streamed.ImageLength, "Image length differs");
-    Check(memory.Placements.SequenceEqual(streamed.Placements), "Placements differ");
+    CheckPlacementsEquivalent(memory.Placements, streamed.Placements);
+    Check(memory.Placements.Any(p => !p.StoreRaw && p.CompressedBlocks.Count > 0), "Compressed placement lost its encoder block map");
     Check(ProsperoNwonlyNapsGenerator.Generate(memory).AsSpan().SequenceEqual(
         ProsperoNwonlyNapsGenerator.Generate(streamed)), "NAPS differs for a file-backed image");
     File.Delete(streamed.ImageFilePath!);
     Check(!Directory.EnumerateFiles(scratch, "libprospero-*.tmp").Any(), "Compression intermediates leaked");
-    Console.WriteLine("PASS inner image, placements and NAPS equivalence");
+    Console.WriteLine("PASS inner image, per-block placements and NAPS equivalence");
 
     var fsTree = new ProsperoFsDir();
     fsTree.Files.Add(new ProsperoFsFile(stream =>
@@ -135,6 +162,59 @@ try
         }
     }
     Console.WriteLine("PASS NAPS base widths and terminal groups");
+
+    // Reproduce the real-world failure class: one large encoded file containing hundreds of 256 KiB
+    // logical blocks. Collapsing this into one CblockInfo produces huge u2c deltas; the captured block
+    // map keeps each group locally addressable and also adds the periodic RUN re-anchors.
+    const int mappedBlockCount = 600;
+    const int encodedBlockSize = 0x18000;
+    const int logicalBlockSize = 0x40000;
+    var mappedBlocks = Enumerable.Range(0, mappedBlockCount)
+        .Select(_ => new NapsFileBlockPlacement(
+            encodedBlockSize, logicalBlockSize, IsStored: false,
+            IsMultiChunk: false, FirstChunkCompressedSize: encodedBlockSize))
+        .ToArray();
+    var mappedRunStarts = new HashSet<long> { 0 };
+    long mappedOnDisk = 0;
+    for (int i = 0; i < mappedBlocks.Length; i++)
+    {
+        if (i > 0 && i % 11 == 0) mappedRunStarts.Add(mappedOnDisk);
+        mappedOnDisk += mappedBlocks[i].CompressedSize;
+    }
+    long mappedLogicalSize = (long)mappedBlockCount * logicalBlockSize;
+    var mappedLayout = ProsperoNapsLayoutBuilder.BuildFromInnerImage(
+        numUBlocks: mappedBlockCount,
+        numOuterBlocks: checked((int)((mappedOnDisk + 0xffff) / 0x10000)),
+        files: new[]
+        {
+            new NapsFilePlacement
+            {
+                OnDiskOffset = 0,
+                LogicalOffset = 0,
+                OnDiskSize = mappedOnDisk,
+                UncompressedSize = mappedLogicalSize,
+                StoreRaw = false,
+                CompressedKde = 2,
+                Blocks = mappedBlocks,
+            }
+        },
+        runStartOnDiskOffsets: mappedRunStarts,
+        tailBlocks: new[]
+        {
+            new NapsCblockPlanEntry
+            {
+                StartRun = true,
+                OnDiskOffset = mappedOnDisk,
+                LogicalOffset = mappedLogicalSize,
+                Terminator = true,
+            }
+        },
+        fileLogicalOffsets: new long[] { 0, mappedLogicalSize });
+    Check(mappedLayout.CblockInfos.Count > mappedBlockCount,
+        "Mapped NAPS did not emit per-block CblockInfo records/RUN anchors");
+    foreach (var u2cEntry in mappedLayout.CblockInfoOffsetByUblock)
+        Check(u2cEntry.DeltaFromBase.All(delta => delta <= 255), "Mapped NAPS emitted an invalid u2c delta");
+    Console.WriteLine("PASS 600-block compressed-file NAPS map without real-u2c overflow");
 
     if (args.Contains("--large"))
     {

@@ -245,6 +245,41 @@ def _patch_pkg_builder(path: Path) -> None:
 '''
     text = _replace_once(path, text, old_normalizer, new_normalizer, "AMPR param.json normalization")
 
+    old_media_start = '''    private static IEnumerable<ProsperoCntEntry> CollectMediaEntries(string sourceFolder)
+    {
+        var sceSys = Path.Combine(sourceFolder, "sce_sys");
+        var emitted = new HashSet<uint>();
+
+        foreach (var (name, id) in MediaFiles)
+        {
+'''
+    new_media_start = '''    private static IEnumerable<ProsperoCntEntry> CollectMediaEntries(string sourceFolder)
+    {
+        var sceSys = Path.Combine(sourceFolder, "sce_sys");
+        var emitted = new HashSet<uint>();
+        bool dropSourcePlayGo = IsPackizardAmprTree(sourceFolder);
+
+        foreach (var (name, id) in MediaFiles)
+        {
+            if (dropSourcePlayGo && name.StartsWith("playgo", StringComparison.OrdinalIgnoreCase))
+                continue;
+'''
+    text = _replace_once(path, text, old_media_start, new_media_start, "AMPR source PlayGo media filtering")
+
+    old_remaining = '''        {
+            var rel = Path.GetRelativePath(sceSys, file).Replace('\\\\', '/');
+            if (!ProsperoCntEntryNames.NameToId.TryGetValue(rel, out var id)) continue;
+'''
+    new_remaining = '''        {
+            var rel = Path.GetRelativePath(sceSys, file).Replace('\\\\', '/');
+            // Never combine regenerated PlayGo descriptors with source-package PlayGo metadata.
+            // playgo-scenario.json is particularly dangerous here because its chunk/scenario map can
+            // disagree with the freshly generated chunk/ficm/hash tables and make PlayGo reject mount.
+            if (dropSourcePlayGo && rel.StartsWith("playgo", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!ProsperoCntEntryNames.NameToId.TryGetValue(rel, out var id)) continue;
+'''
+    text = _replace_once(path, text, old_remaining, new_remaining, "AMPR remaining source PlayGo filtering")
+
     marker = '''    /// <summary>The content-type code for a PS5 volume kind.</summary>
     public static uint ContentTypeFor(ProsperoVolumeType type) => type switch
 '''

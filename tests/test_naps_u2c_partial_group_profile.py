@@ -12,7 +12,9 @@ SHIM = ROOT / "ci" / "naps_u2c_partial_group_profile.py"
 class PackizardNativeNapsSourceTests(unittest.TestCase):
     def test_legacy_entry_point_delegates_to_native_profile(self):
         text = SHIM.read_text(encoding="utf-8")
-        self.assertIn("from packizard_native_naps_profile import apply", text)
+        self.assertIn("import packizard_native_naps_profile as native", text)
+        self.assertIn("native.apply(root)", text)
+        self.assertIn("_fix_logical_mount_geometry(root)", text)
         self.assertNotIn("numCblockInfo - 1", text)
 
     def test_native_data_stream_is_file_count_independent(self):
@@ -35,6 +37,12 @@ class PackizardNativeNapsSourceTests(unittest.TestCase):
         self.assertIn("PackizardNativeNapsEngine.Generate", text)
         self.assertIn("DataBlocks = dataStream.Blocks", text)
         self.assertIn("PackizardNativeDataStream.Build", text)
+
+    def test_shim_separates_logical_mount_from_physical_data_size(self):
+        text = SHIM.read_text(encoding="utf-8")
+        self.assertIn("dataStream.LogicalLength", text)
+        self.assertIn("_ensure_native_build_image_overload", text)
+        self.assertIn("dataStream.EncodedLength", text)
 
 
 if __name__ == "__main__":

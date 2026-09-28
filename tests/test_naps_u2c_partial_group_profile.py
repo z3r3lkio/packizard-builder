@@ -41,7 +41,8 @@ class PackizardNativeNapsSourceTests(unittest.TestCase):
     def test_shim_separates_logical_mount_from_physical_data_size(self):
         text = SHIM.read_text(encoding="utf-8")
         self.assertIn("dataStream.LogicalLength", text)
-        self.assertIn("_ensure_native_build_image_overload", text)
+        self.assertIn("_ensure_native_image_writer", text)
+        self.assertIn("BuildNativeImage", text)
         self.assertIn("dataStream.EncodedLength", text)
 
 

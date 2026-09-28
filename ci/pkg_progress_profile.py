@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Add low-overhead progress telemetry and AMPR direct-I/O to the reconstructed PKG engine.
-
-This profile is applied after the generic large-package overrides and the AMPR compatibility
-profile. It keeps the bridge protocol unchanged: LibProsperoPKG progress is emitted through the
-existing logger, which Packizard.PkgBridge already forwards to the GUI.
-"""
+"""Add AMPR direct-I/O plus detailed integrated-PKG progress telemetry."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -31,12 +26,15 @@ def _patch_fs_tree(path: Path) -> None:
     if "Packizard direct-I/O source path" in text:
         return
 
-    old_class = '''public class ProsperoFsFile : ProsperoFsNode
+    text = _replace_once(
+        path,
+        text,
+        '''public class ProsperoFsFile : ProsperoFsNode
 {
     /// <summary>
     /// Creates an FSFile from a real on-disk file.
-'''
-    new_class = '''public class ProsperoFsFile : ProsperoFsNode
+''',
+        '''public class ProsperoFsFile : ProsperoFsNode
 {
     /// <summary>
     /// Packizard direct-I/O source path. Non-null only for nodes created from a real on-disk file;
@@ -46,19 +44,23 @@ def _patch_fs_tree(path: Path) -> None:
 
     /// <summary>
     /// Creates an FSFile from a real on-disk file.
-'''
-    text = _replace_once(path, text, old_class, new_class, "ProsperoFsFile source-path property")
-
-    old_ctor = '''    public ProsperoFsFile(string origFileName)
+''',
+        "ProsperoFsFile source-path property",
+    )
+    text = _replace_once(
+        path,
+        text,
+        '''    public ProsperoFsFile(string origFileName)
     {
         Write = s => { using (var f = File.OpenRead(origFileName)) f.CopyTo(s); };
-'''
-    new_ctor = '''    public ProsperoFsFile(string origFileName)
+''',
+        '''    public ProsperoFsFile(string origFileName)
     {
         SourcePath = Path.GetFullPath(origFileName);
         Write = s => { using (var f = File.OpenRead(origFileName)) f.CopyTo(s); };
-'''
-    text = _replace_once(path, text, old_ctor, new_ctor, "ProsperoFsFile source-path capture")
+''',
+        "ProsperoFsFile source-path capture",
+    )
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
@@ -67,36 +69,45 @@ def _patch_image_builder(path: Path) -> None:
     if "PackizardProgressCallback" in text:
         return
 
-    old_usings = '''using System;
+    text = _replace_once(
+        path,
+        text,
+        '''using System;
 using System.Collections.Generic;
 using System.IO;
-'''
-    new_usings = '''using System;
+''',
+        '''using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-'''
-    text = _replace_once(path, text, old_usings, new_usings, "diagnostics using")
-
-    old_path = '''    /// <summary>Optional already-encoded file payload for the disk-backed writer.</summary>
+''',
+        "diagnostics using",
+    )
+    text = _replace_once(
+        path,
+        text,
+        '''    /// <summary>Optional already-encoded file payload for the disk-backed writer.</summary>
     public string? DataPath;
 
     /// <summary>When true the payload is stored raw (never compressed) and is placed block-aligned.</summary>
-'''
-    new_path = '''    /// <summary>Optional already-encoded file payload for the disk-backed writer.</summary>
+''',
+        '''    /// <summary>Optional already-encoded file payload for the disk-backed writer.</summary>
     public string? DataPath;
 
     /// <summary>Display path used only for build progress diagnostics.</summary>
     public string? DisplayName;
 
     /// <summary>When true the payload is stored raw (never compressed) and is placed block-aligned.</summary>
-'''
-    text = _replace_once(path, text, old_path, new_path, "payload display name")
-
-    old_sig = '''    public long BuildToFile(IReadOnlyList<ProsperoPs5InnerPayload> payloads, string outputPath)
+''',
+        "payload display name",
+    )
+    text = _replace_once(
+        path,
+        text,
+        '''    public long BuildToFile(IReadOnlyList<ProsperoPs5InnerPayload> payloads, string outputPath)
     {
-'''
-    new_sig = '''    public delegate void PackizardProgressCallback(long completedBytes, long totalBytes, string? currentPath);
+''',
+        '''    public delegate void PackizardProgressCallback(long completedBytes, long totalBytes, string? currentPath);
 
     // Keep the original public API for callers that do not need telemetry.
     public long BuildToFile(IReadOnlyList<ProsperoPs5InnerPayload> payloads, string outputPath)
@@ -107,18 +118,21 @@ using System.IO;
         string outputPath,
         PackizardProgressCallback? progress)
     {
-'''
-    text = _replace_once(path, text, old_sig, new_sig, "BuildToFile progress signature")
-
-    old_setup = '''        using var fs = new FileStream(
+''',
+        "BuildToFile progress signature",
+    )
+    text = _replace_once(
+        path,
+        text,
+        '''        using var fs = new FileStream(
             outputPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None,
             1024 * 1024, FileOptions.SequentialScan);
 
         long pos = 0;
         foreach (var p in payloads)
         {
-'''
-    new_setup = '''        using var fs = new FileStream(
+''',
+        '''        using var fs = new FileStream(
             outputPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None,
             1024 * 1024, FileOptions.SequentialScan);
 
@@ -140,8 +154,6 @@ using System.IO;
             if (progress is null) return;
             long now = progressWatch.ElapsedMilliseconds;
             int percent = totalWork <= 0 ? 100 : (int)Math.Min(100L, workDone * 100L / totalWork);
-            // At most one line per second, plus a 3-second heartbeat if the integer percentage
-            // has not advanced (large files / slow disks). This keeps the GUI informative without spam.
             if (!force && now - lastProgressMs < 1000) return;
             if (!force && percent == lastProgressPercent && now - lastProgressMs < 3000) return;
             lastProgressMs = now;
@@ -155,10 +167,13 @@ using System.IO;
         foreach (var p in payloads)
         {
             Report(p.DisplayName);
-'''
-    text = _replace_once(path, text, old_setup, new_setup, "BuildToFile progress setup")
-
-    old_copy = '''            if (p.DataPath is not null)
+''',
+        "BuildToFile progress setup",
+    )
+    text = _replace_once(
+        path,
+        text,
+        '''            if (p.DataPath is not null)
             {
                 using var input = File.OpenRead(p.DataPath);
                 if (p.StoreRaw) input.CopyTo(fs, 1024 * 1024);
@@ -169,8 +184,8 @@ using System.IO;
                 byte[] data = CompressPayload(p.Data, p.StoreRaw);
                 fs.Write(data);
             }
-'''
-    new_copy = '''            if (p.DataPath is not null)
+''',
+        '''            if (p.DataPath is not null)
             {
                 using var input = File.OpenRead(p.DataPath);
                 if (p.StoreRaw)
@@ -198,53 +213,66 @@ using System.IO;
                 workDone = checked(workDone + p.Data.LongLength);
                 Report(p.DisplayName);
             }
-'''
-    text = _replace_once(path, text, old_copy, new_copy, "stream copy progress")
-
-    old_end = '''        fs.SetLength(pos);
+''',
+        "stream copy progress",
+    )
+    text = _replace_once(
+        path,
+        text,
+        '''        fs.SetLength(pos);
         fs.Flush();
         return pos;
-'''
-    new_end = '''        fs.SetLength(pos);
+''',
+        '''        fs.SetLength(pos);
         fs.Flush();
         workDone = totalWork;
         Report(null, force: true);
         return pos;
-'''
-    text = _replace_once(path, text, old_end, new_end, "BuildToFile completion progress")
+''',
+        "BuildToFile completion progress",
+    )
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
 def _patch_assembler(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
-    if "Inner image write:" in text:
+    if "Inner preparation complete:" in text:
         return
 
-    old_usings = '''using System.Collections.Generic;
+    text = _replace_once(
+        path,
+        text,
+        '''using System.Collections.Generic;
 using System.Linq;
 using System.IO;
-'''
-    new_usings = '''using System.Collections.Generic;
+''',
+        '''using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.IO;
-'''
-    text = _replace_once(path, text, old_usings, new_usings, "assembler diagnostics using")
-
-    old_bridge_sig = '''    public ProsperoPs5InnerImageResult BuildFromFsTree(
+''',
+        "assembler diagnostics using",
+    )
+    text = _replace_once(
+        path,
+        text,
+        '''    public ProsperoPs5InnerImageResult BuildFromFsTree(
         ProsperoFsDir uroot,
         bool preserveCntMetadataInInner = false,
         bool storeAmprCompatibilityPathsRaw = false)
-'''
-    new_bridge_sig = '''    public ProsperoPs5InnerImageResult BuildFromFsTree(
+''',
+        '''    public ProsperoPs5InnerImageResult BuildFromFsTree(
         ProsperoFsDir uroot,
         bool preserveCntMetadataInInner = false,
         bool storeAmprCompatibilityPathsRaw = false,
         Action<string>? logger = null)
-'''
-    text = _replace_once(path, text, old_bridge_sig, new_bridge_sig, "BuildFromFsTree logger parameter")
-
-    old_materialize = '''            string path = temps.Create();
+''',
+        "BuildFromFsTree logger parameter",
+    )
+    text = _replace_once(
+        path,
+        text,
+        '''            string path = temps.Create();
             using (var output = new FileStream(path, FileMode.Truncate, FileAccess.Write, FileShare.None))
             {
                 f.Write(output);
@@ -259,11 +287,8 @@ using System.IO;
                     ? ProsperoInnerFilePolicy.StoreVerbatim
                     : null,
             });
-'''
-    new_materialize = '''            // AMPR trees are already made of large, immutable on-disk volumes. Keep their real
-            // source path instead of first cloning every file into a temporary staging tree; the old
-            // path doubled disk I/O before image writing and looked like a hang on large titles.
-            string? dataPath = storeAmprCompatibilityPathsRaw ? f.SourcePath : null;
+''',
+        '''            string? dataPath = storeAmprCompatibilityPathsRaw ? f.SourcePath : null;
             if (string.IsNullOrEmpty(dataPath) || !File.Exists(dataPath))
             {
                 dataPath = temps.Create();
@@ -280,64 +305,238 @@ using System.IO;
                     ? ProsperoInnerFilePolicy.StoreVerbatim
                     : null,
             });
-'''
-    text = _replace_once(path, text, old_materialize, new_materialize, "AMPR direct source I/O")
-
-    old_return = '''        return Build(files);
+''',
+        "AMPR direct source I/O",
+    )
+    text = _replace_once(
+        path,
+        text,
+        '''        return Build(files);
     }
-'''
-    new_return = '''        long inputBytes = files.Sum(f => f.DataPath is { Length: > 0 } ? new FileInfo(f.DataPath).Length : f.Data.LongLength);
+''',
+        '''        long inputBytes = files.Sum(f => f.DataPath is { Length: > 0 } ? new FileInfo(f.DataPath).Length : f.Data.LongLength);
         logger?.Invoke($"Inner image input: {files.Count:N0} files, {inputBytes / (1024d * 1024d * 1024d):F2} GiB. " +
             (storeAmprCompatibilityPathsRaw ? "AMPR direct-I/O enabled; redundant staging copy skipped." : "Preparing file-backed layout."));
         return Build(files, logger);
     }
-'''
-    text = _replace_once(path, text, old_return, new_return, "BuildFromFsTree progress handoff")
-
-    old_build_sig = '''    public ProsperoPs5InnerImageResult Build(IReadOnlyList<ProsperoPs5InnerFile> files)
+''',
+        "BuildFromFsTree progress handoff",
+    )
+    text = _replace_once(
+        path,
+        text,
+        '''    public ProsperoPs5InnerImageResult Build(IReadOnlyList<ProsperoPs5InnerFile> files)
     {
-'''
-    new_build_sig = '''    public ProsperoPs5InnerImageResult Build(IReadOnlyList<ProsperoPs5InnerFile> files, Action<string>? logger = null)
+''',
+        '''    public ProsperoPs5InnerImageResult Build(IReadOnlyList<ProsperoPs5InnerFile> files, Action<string>? logger = null)
     {
-'''
-    text = _replace_once(path, text, old_build_sig, new_build_sig, "assembler Build logger parameter")
+''',
+        "assembler Build logger parameter",
+    )
 
-    old_build_image_call = '''        byte[] image = BuildImage(afidOrder, metaPlain, out long blockInfoOnDisk, out long metadataOnDisk,
+    old_prepare = '''        // ---- 3. Logical offsets (packed, in afid order) + store rule. -----------------------------
+        long cursor = 0;
+        var afidOffsets = new long[afidOrder.Count];
+        foreach (var f in afidOrder)
+        {
+            f.LogicalOffset = cursor;
+            afidOffsets[f.Afid] = cursor;
+            cursor = checked(cursor + f.DataLength);
+            ProsperoInnerFilePolicy policy = f.Policy
+                ?? ProsperoInnerFileClassifier.Classify(f.Header);
+            f.StoreRaw = policy == ProsperoInnerFilePolicy.StoreVerbatim
+                || policy == ProsperoInnerFilePolicy.RequiresModuleConversion;
+            if (f.DataPath is not null)
+            {
+                if (f.StoreRaw)
+                {
+                    f.OnDiskPath = f.DataPath;
+                    f.OnDiskLength = f.DataLength;
+                }
+                else
+                {
+                    f.OnDiskPath = temps.Create();
+                    using var input = File.OpenRead(f.DataPath);
+                    using var output = new FileStream(f.OnDiskPath, FileMode.Truncate, FileAccess.Write);
+                    ProsperoPs5InnerImageBuilder.CompressPayloadToStream(input, output, f.DataLength);
+                    f.OnDiskLength = output.Length;
+                }
+            }
+            else
+            {
+                f.OnDiskData = ProsperoPs5InnerImageBuilder.CompressPayload(f.Data, f.StoreRaw);
+                f.OnDiskLength = f.OnDiskData.LongLength;
+            }
+            f.SceSys = f.FullPath.StartsWith("/sce_sys/", StringComparison.Ordinal);
+            f.WholeBlockRaw = IsKeystone(f.FullPath);
+        }
+'''
+    new_prepare = '''        // ---- 3. Logical offsets (packed, in afid order) + store rule. -----------------------------
+        logger?.Invoke($"Inner preparation: classifying and encoding {afidOrder.Count:N0} payload files...");
+        var prepareWatch = Stopwatch.StartNew();
+        int preparedFiles = 0;
+        int rawFiles = 0;
+        int krakenFiles = 0;
+        long preparedInputBytes = 0;
+        long preparedStoredBytes = 0;
+        long cursor = 0;
+        var afidOffsets = new long[afidOrder.Count];
+        foreach (var f in afidOrder)
+        {
+            f.LogicalOffset = cursor;
+            afidOffsets[f.Afid] = cursor;
+            cursor = checked(cursor + f.DataLength);
+            ProsperoInnerFilePolicy policy = f.Policy
+                ?? ProsperoInnerFileClassifier.Classify(f.Header);
+            f.StoreRaw = policy == ProsperoInnerFilePolicy.StoreVerbatim
+                || policy == ProsperoInnerFilePolicy.RequiresModuleConversion;
+
+            int ordinal = preparedFiles + 1;
+            string mode = f.StoreRaw ? "RAW" : "KRAKEN";
+            logger?.Invoke($"  [{ordinal,4}/{afidOrder.Count}] {mode,-6} {f.DataLength / (1024d * 1024d),10:F2} MiB  {f.FullPath}");
+            var fileWatch = Stopwatch.StartNew();
+
+            if (f.DataPath is not null)
+            {
+                if (f.StoreRaw)
+                {
+                    f.OnDiskPath = f.DataPath;
+                    f.OnDiskLength = f.DataLength;
+                }
+                else
+                {
+                    f.OnDiskPath = temps.Create();
+                    using var input = File.OpenRead(f.DataPath);
+                    using var output = new FileStream(f.OnDiskPath, FileMode.Truncate, FileAccess.Write);
+                    ProsperoPs5InnerImageBuilder.CompressPayloadToStream(input, output, f.DataLength);
+                    f.OnDiskLength = output.Length;
+                }
+            }
+            else
+            {
+                f.OnDiskData = ProsperoPs5InnerImageBuilder.CompressPayload(f.Data, f.StoreRaw);
+                f.OnDiskLength = f.OnDiskData.LongLength;
+            }
+
+            preparedFiles++;
+            preparedInputBytes = checked(preparedInputBytes + f.DataLength);
+            preparedStoredBytes = checked(preparedStoredBytes + f.OnDiskLength);
+            if (f.StoreRaw)
+            {
+                rawFiles++;
+            }
+            else
+            {
+                krakenFiles++;
+                double ratio = f.DataLength <= 0 ? 100.0 : f.OnDiskLength * 100.0 / f.DataLength;
+                double seconds = Math.Max(0.001, fileWatch.Elapsed.TotalSeconds);
+                double speed = f.DataLength / seconds / (1024d * 1024d);
+                logger?.Invoke($"       -> {f.OnDiskLength / (1024d * 1024d):F2} MiB ({ratio:F1}% of source) in {seconds:F1}s @ {speed:F1} MiB/s");
+            }
+
+            f.SceSys = f.FullPath.StartsWith("/sce_sys/", StringComparison.Ordinal);
+            f.WholeBlockRaw = IsKeystone(f.FullPath);
+        }
+        double prepareSeconds = Math.Max(0.001, prepareWatch.Elapsed.TotalSeconds);
+        double aggregateSpeed = preparedInputBytes / prepareSeconds / (1024d * 1024d);
+        logger?.Invoke($"Inner preparation complete: {preparedFiles:N0} files ({rawFiles:N0} raw, {krakenFiles:N0} Kraken), " +
+            $"{preparedInputBytes / (1024d * 1024d * 1024d):F2} GiB input -> {preparedStoredBytes / (1024d * 1024d * 1024d):F2} GiB stored " +
+            $"in {prepareSeconds:F1}s @ {aggregateSpeed:F1} MiB/s.");
+'''
+    text = _replace_once(path, text, old_prepare, new_prepare, "verbose inner preparation")
+
+    text = _replace_once(
+        path,
+        text,
+        '''        // ---- 4. Dirents (with byte offsets). -------------------------------------------------------
+        BuildDirents(uroot);
+
+        // ---- 5. Build the metadata nodes in inode order. ------------------------------------------
+''',
+        '''        // ---- 4. Dirents (with byte offsets). -------------------------------------------------------
+        logger?.Invoke($"Inner metadata: data region = {dataBlocks:N0} blocks; building dirents, inodes and AFID tables...");
+        BuildDirents(uroot);
+
+        // ---- 5. Build the metadata nodes in inode order. ------------------------------------------
+''',
+        "metadata stage log",
+    )
+    text = _replace_once(
+        path,
+        text,
+        '''        byte[] metaPlain = BuildMetadataPlaintext(nodes, dirsPreOrder, fileNodes, afidOrder, ndblock,
+            inodeFltInode, aprFltInode, afidTableInode, uroot);
+
+        // ---- 7. Assemble the data-first image. ----------------------------------------------------
+''',
+        '''        byte[] metaPlain = BuildMetadataPlaintext(nodes, dirsPreOrder, fileNodes, afidOrder, ndblock,
+            inodeFltInode, aprFltInode, afidTableInode, uroot);
+        logger?.Invoke($"Inner metadata plaintext ready: {metaPlain.Length / 1024d:F1} KiB, Ndblock={ndblock:N0}. Assembling data-first image...");
+
+        // ---- 7. Assemble the data-first image. ----------------------------------------------------
+''',
+        "metadata completion log",
+    )
+    text = _replace_once(
+        path,
+        text,
+        '''        byte[] image = BuildImage(afidOrder, metaPlain, out long blockInfoOnDisk, out long metadataOnDisk,
             out byte[] compressedMeta, out var metaBlocks, out string? imageFilePath, out long imageLength, temps);
-'''
-    new_build_image_call = '''        byte[] image = BuildImage(afidOrder, metaPlain, out long blockInfoOnDisk, out long metadataOnDisk,
+''',
+        '''        byte[] image = BuildImage(afidOrder, metaPlain, out long blockInfoOnDisk, out long metadataOnDisk,
             out byte[] compressedMeta, out var metaBlocks, out string? imageFilePath, out long imageLength, temps, logger);
-'''
-    text = _replace_once(path, text, old_build_image_call, new_build_image_call, "BuildImage logger handoff")
-
-    old_build_image_sig = '''    private byte[] BuildImage(List<FileNode> afidOrder, byte[] metaPlain,
+''',
+        "BuildImage logger handoff",
+    )
+    text = _replace_once(
+        path,
+        text,
+        '''    private byte[] BuildImage(List<FileNode> afidOrder, byte[] metaPlain,
         out long blockInfoOnDisk, out long metadataOnDisk, out byte[] compressedMeta,
         out IReadOnlyList<ProsperoInnerMetaBlockChunk> metaBlocks,
         out string? imageFilePath, out long imageLength, ProsperoBuildTempFiles temps)
-'''
-    new_build_image_sig = '''    private byte[] BuildImage(List<FileNode> afidOrder, byte[] metaPlain,
+''',
+        '''    private byte[] BuildImage(List<FileNode> afidOrder, byte[] metaPlain,
         out long blockInfoOnDisk, out long metadataOnDisk, out byte[] compressedMeta,
         out IReadOnlyList<ProsperoInnerMetaBlockChunk> metaBlocks,
         out string? imageFilePath, out long imageLength, ProsperoBuildTempFiles temps, Action<string>? logger)
-'''
-    text = _replace_once(path, text, old_build_image_sig, new_build_image_sig, "BuildImage logger parameter")
-
-    old_payload = '''                Data = f.OnDiskData ?? Array.Empty<byte>(),
+''',
+        "BuildImage logger parameter",
+    )
+    text = _replace_once(
+        path,
+        text,
+        '''                Data = f.OnDiskData ?? Array.Empty<byte>(),
                 DataPath = f.OnDiskPath,
                 StoreRaw = true,
-'''
-    new_payload = '''                Data = f.OnDiskData ?? Array.Empty<byte>(),
+''',
+        '''                Data = f.OnDiskData ?? Array.Empty<byte>(),
                 DataPath = f.OnDiskPath,
                 DisplayName = f.FullPath,
                 StoreRaw = true,
-'''
-    text = _replace_once(path, text, old_payload, new_payload, "payload progress name")
-
-    old_write = '''            imageFilePath = temps.Create();
+''',
+        "payload progress name",
+    )
+    text = _replace_once(
+        path,
+        text,
+        '''        compressedMeta = ProsperoPs5InnerImageBuilder.CompressPayload(metaPlain, storeRaw: false, out var metaPf);
+''',
+        '''        logger?.Invoke($"Inner image metadata: Kraken-encoding {metaPlain.Length / 1024d:F1} KiB metadata region...");
+        compressedMeta = ProsperoPs5InnerImageBuilder.CompressPayload(metaPlain, storeRaw: false, out var metaPf);
+        logger?.Invoke($"Inner image metadata encoded: {metaPlain.Length / 1024d:F1} KiB -> {compressedMeta.Length / 1024d:F1} KiB.");
+''',
+        "metadata Kraken progress",
+    )
+    text = _replace_once(
+        path,
+        text,
+        '''            imageFilePath = temps.Create();
             long written = new ProsperoPs5InnerImageBuilder().BuildToFile(payloads, imageFilePath);
             if (written != imageLength)
-'''
-    new_write = '''            imageFilePath = temps.Create();
+''',
+        '''            imageFilePath = temps.Create();
+            logger?.Invoke($"Inner image write starting: {imageLength / (1024d * 1024d * 1024d):F2} GiB planned across {payloads.Count:N0} payloads.");
             var imageWriteWatch = Stopwatch.StartNew();
             long written = new ProsperoPs5InnerImageBuilder().BuildToFile(
                 payloads,
@@ -358,29 +557,44 @@ using System.IO;
             string elapsed = imageWriteWatch.Elapsed.ToString(@"hh\\:mm\\:ss");
             logger?.Invoke($"Inner image write complete: {written / (1024d * 1024d * 1024d):F2} GiB in {elapsed}.");
             if (written != imageLength)
-'''
-    text = _replace_once(path, text, old_write, new_write, "disk-backed inner image progress")
+''',
+        "disk-backed inner image progress",
+    )
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
 def _patch_pkg_builder(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
-    if "logger: log" in text and "Inner image ready:" in text:
+    if "NAPS layout generated:" in text and "Inner image ready:" in text:
         return
 
-    old_call = '''                    innerRoot,
+    text = _replace_once(
+        path,
+        text,
+        '''                    innerRoot,
                     preserveCntMetadataInInner: packizardAmprProfile,
                     storeAmprCompatibilityPathsRaw: packizardAmprProfile);
             temps.Own(asmResult.ImageFilePath);
-'''
-    new_call = '''                    innerRoot,
+''',
+        '''                    innerRoot,
                     preserveCntMetadataInInner: packizardAmprProfile,
                     storeAmprCompatibilityPathsRaw: packizardAmprProfile,
                     logger: log);
             temps.Own(asmResult.ImageFilePath);
             log($"Inner image ready: {asmResult.ImageLength / (1024d * 1024d * 1024d):F2} GiB; generating NAPS metadata.");
-'''
-    text = _replace_once(path, text, old_call, new_call, "package-builder progress logger")
+''',
+        "package-builder progress logger",
+    )
+    text = _replace_once(
+        path,
+        text,
+        '''            byte[] nwonlyNaps = ProsperoNwonlyNapsGenerator.Generate(asmResult);
+''',
+        '''            byte[] nwonlyNaps = ProsperoNwonlyNapsGenerator.Generate(asmResult);
+            log($"NAPS layout generated: {nwonlyNaps.Length:N0} bytes; calculating PlayGo/FIH metadata.");
+''',
+        "NAPS completion log",
+    )
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
@@ -395,4 +609,4 @@ def apply(root: Path) -> None:
     _patch_image_builder(root / IMAGE_BUILDER_REL)
     _patch_assembler(root / ASSEMBLER_REL)
     _patch_pkg_builder(root / PKG_BUILDER_REL)
-    print("Applied Packizard integrated-PKG direct-I/O and progress telemetry")
+    print("Applied Packizard integrated-PKG direct-I/O and detailed progress telemetry")

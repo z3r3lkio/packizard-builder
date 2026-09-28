@@ -98,10 +98,14 @@ using System.IO;
 '''
     new_sig = '''    public delegate void PackizardProgressCallback(long completedBytes, long totalBytes, string? currentPath);
 
+    // Keep the original public API for callers that do not need telemetry.
+    public long BuildToFile(IReadOnlyList<ProsperoPs5InnerPayload> payloads, string outputPath)
+        => BuildToFile(payloads, outputPath, null);
+
     public long BuildToFile(
         IReadOnlyList<ProsperoPs5InnerPayload> payloads,
         string outputPath,
-        PackizardProgressCallback? progress = null)
+        PackizardProgressCallback? progress)
     {
 '''
     text = _replace_once(path, text, old_sig, new_sig, "BuildToFile progress signature")

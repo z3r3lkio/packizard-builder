@@ -2,6 +2,7 @@ import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +15,9 @@ def load_profile():
     module = importlib.util.module_from_spec(spec)
     assert spec is not None and spec.loader is not None
     spec.loader.exec_module(module)
+    # These tests exercise only the terminal-group transform. The structural per-block
+    # profile has its own tests and is exercised end-to-end by StreamingRegression.
+    module._load_data_block_profile = lambda: SimpleNamespace(apply=lambda root: None)
     return module
 
 

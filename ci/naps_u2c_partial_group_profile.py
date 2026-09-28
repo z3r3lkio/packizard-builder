@@ -1,21 +1,29 @@
 #!/usr/bin/env python3
-"""Fix NAPS u2c encoding for the terminal partial 8-U-block group.
+"""Apply Packizard NAPS large-layout compatibility fixes.
 
-The on-disk u2c record only describes real U-blocks. Unused slots in the final
-partial group are zero-filled. Mapping those slots to the terminator can create
-large synthetic deltas (>255) even though no real U-block needs that mapping.
+First preserve the real per-256KiB Kraken/stored data-block map, then fix the
+terminal partial 8-U-block group. Keeping these in one entry point ensures the
+existing CI/package workflow applies both fixes to every reconstructed engine.
 """
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
 
+import naps_data_block_map_profile
+
 
 TARGET = Path("vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/ProsperoNapsLayoutBuilder.cs")
 
 
 def apply(root: Path) -> None:
-    path = Path(root) / TARGET
+    root = Path(root)
+
+    # Must run first: this is the structural fix for real-U-block delta overflows.
+    # The partial-group patch below only handles unused slots in the terminal group.
+    naps_data_block_map_profile.apply(root)
+
+    path = root / TARGET
     if not path.is_file():
         raise RuntimeError(f"Missing reconstructed NAPS builder: {path}")
 

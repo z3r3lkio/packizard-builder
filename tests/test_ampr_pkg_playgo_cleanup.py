@@ -48,6 +48,24 @@ class AmprPkgPlayGoCleanupTests(unittest.TestCase):
             )
             self.assertIn('const string prefix = "/sce_sys/playgo";', assembler)
 
+    def test_ampr_profile_drops_all_source_playgo_from_cnt_media(self):
+        module = load_profile()
+        with tempfile.TemporaryDirectory() as td:
+            root = self._prepared_root(td)
+            module.apply(root)
+
+            builder = (root / module.PKG_BUILDER_REL).read_text(encoding="utf-8")
+            self.assertIn("bool dropSourcePlayGo = IsPackizardAmprTree(sourceFolder);", builder)
+            self.assertIn(
+                'dropSourcePlayGo && name.StartsWith("playgo", StringComparison.OrdinalIgnoreCase)',
+                builder,
+            )
+            self.assertIn(
+                'dropSourcePlayGo && rel.StartsWith("playgo", StringComparison.OrdinalIgnoreCase)',
+                builder,
+            )
+            self.assertIn("playgo-scenario.json is particularly dangerous", builder)
+
     def test_ampr_profile_sanitizes_packaged_param_without_touching_source(self):
         module = load_profile()
         with tempfile.TemporaryDirectory() as td:

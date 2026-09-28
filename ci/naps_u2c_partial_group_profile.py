@@ -46,6 +46,12 @@ def _normalize_zero_length_files(root: Path) -> None:
     assembler_path = root / ASSEMBLER
     layout_path = root / TARGET
 
+    # The narrow unit tests for the terminal u2c transform intentionally build only a
+    # one-file NAPS fixture. In a real reconstructed engine both files exist; skip this
+    # cross-file normalization for those isolated fixtures.
+    if not assembler_path.is_file() or not layout_path.is_file():
+        return
+
     assembler = assembler_path.read_text(encoding="utf-8")
     old_capture = '''                if (!f.StoreRaw && compressedFile is not null)\n                {\n'''
     new_capture = '''                // A zero-byte file has no logical U-block. ProsperoCompressedPfsImage can\n                // still expose an implementation-level empty PFSC block in the in-memory path; do\n                // not propagate that artifact into NAPS, so memory and streaming geometry agree.\n                if (!f.StoreRaw && f.DataLength > 0 && compressedFile is not null)\n                {\n'''

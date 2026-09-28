@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Apply Packizard AMPR/LZ4 compatibility behavior to reconstructed LibProsperoPKG.
 
-The compact repository reconstructs the runtime source tree in CI.  Keep the
+The compact repository reconstructs the runtime source tree in CI. Keep the
 AMPR-specific delta here rather than forking the entire upstream engine: normal
 LibProsperoPKG package builds retain their existing behavior, while a prepared
 Packizard AMPR tree is detected automatically and gets the compatibility policy
@@ -63,7 +63,7 @@ def _patch_assembler(path: Path) -> None:
         {
             string fullPath = f.FullPath();
             // Packizard AMPR compatibility: preserve CNT metadata in the inner image as well as
-            // emitting the normal CNT payload.  The direct Shadowmount/LZ tree exposes these files
+            // emitting the normal CNT payload. The direct Shadowmount/LZ tree exposes these files
             // through /app0 and some titles depend on that view during common-dialog startup.
             if (!preserveCntMetadataInInner && IsExcludedFromInner(fullPath)) continue;
             string path = temps.Create();
@@ -103,10 +103,10 @@ def _patch_assembler(path: Path) -> None:
         return rel == "param.json" || PKG.ProsperoCntEntryNames.NameToId.ContainsKey(rel);
     }
 
-    // AMPR/LZ4 volumes already contain independently addressable compressed chunks.  Re-wrapping the
+    // AMPR/LZ4 volumes already contain independently addressable compressed chunks. Re-wrapping the
     // root AMPR payloads in Kraken changes their random-access backing semantics, so the Packizard AMPR
-    // profile stores those files verbatim.  sce_sys and sce_module are also kept raw to mirror the
-    // compatibility layout used by the package-tool reference.  Normal package builds never enable
+    // profile stores those files verbatim. sce_sys and sce_module are also kept raw to mirror the
+    // compatibility layout used by the package-tool reference. Normal package builds never enable
     // this policy and therefore retain the upstream classifier unchanged.
     private static bool IsAmprCompatibilityStoredPath(string fullPath)
     {
@@ -117,9 +117,9 @@ def _patch_assembler(path: Path) -> None:
         if (fullPath is "/eboot.bin" or "/eboot.bin.bak")
             return true;
 
-        // Only root-level AMPR control/index/volume files are forced raw.  Do not match Media/** or
+        // Only root-level AMPR control/index/volume files are forced raw. Do not match Media/** or
         // arbitrary nested files that happen to contain an AMPR-like name.
-        if (!fullPath.StartsWith('/', StringComparison.Ordinal)
+        if (!fullPath.StartsWith("/", StringComparison.Ordinal)
             || fullPath.IndexOf('/', 1) >= 0)
             return false;
 
@@ -168,7 +168,7 @@ def _patch_pkg_builder(path: Path) -> None:
     public static uint ContentTypeFor(ProsperoVolumeType type) => type switch
 '''
     helper = '''    // A Packizard-compressed tree is self-identifying: the AMPR indexes and at least one root
-    // volume are emitted only after a successful LZ4/AMPR stage.  Detection here makes both entry
+    // volume are emitted only after a successful LZ4/AMPR stage. Detection here makes both entry
     // points (Compress -> PKG and manual Build PKG) use the same engine/profile without a second UI
     // switch or an external helper-specific flag.
     private static bool IsPackizardAmprTree(string sourceFolder)

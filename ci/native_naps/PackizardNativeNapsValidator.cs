@@ -1,7 +1,6 @@
 // Packizard Builder - native NAPS structural validation.
 #nullable enable
 using System;
-using System.Collections.Generic;
 
 namespace LibProsperoPkg.PKG;
 
@@ -31,8 +30,9 @@ public static class PackizardNativeNapsValidator
             $"OuterBlockDigests count {document.OuterBlockDigests.Count} != {c.NumOuterBlocks}.");
         Require(document.ShufflePatterns.Count == c.NumShufflePatterns,
             $"ShufflePatterns count {document.ShufflePatterns.Count} != {c.NumShufflePatterns}.");
-        Require(document.FileOffsets.Count >= 1,
-            "NAPS must contain at least one fidx entry.");
+        // Packizard writer contract: NumFiles authored fidx rows plus the fixed six-byte trailer.
+        Require(document.FileOffsets.Count == checked(c.NumFiles + 1),
+            $"FileOffsets count {document.FileOffsets.Count} != Packizard contract NumFiles+1 ({c.NumFiles + 1}).");
         int expectedU2c = (c.NumUBlocks + 8) >> 3;
         Require(document.CblockInfoOffsetByUblock.Count == expectedU2c,
             $"u2c count {document.CblockInfoOffsetByUblock.Count} != {expectedU2c}.");
@@ -68,13 +68,16 @@ public static class PackizardNativeNapsValidator
             NapsU2cEntry u = document.CblockInfoOffsetByUblock[i];
             Require(u.InfoOffset9BBase <= 0xFFFFFF,
                 $"u2c[{i}] base {u.InfoOffset9BBase} exceeds 24 bits.");
-            Require(u.DeltaFromBase is not null && u.DeltaFromBase.Length == 7,
-                $"u2c[{i}] must contain exactly seven delta bytes.");
+            byte[] deltas = u.DeltaFromBase
+                ?? throw new InvalidOperationException(
+                    $"Packizard native NAPS validation failed: u2c[{i}] delta array is null.");
+            Require(deltas.Length == 7,
+                $"u2c[{i}] must contain exactly seven delta bytes, got {deltas.Length}.");
             Require(u.InfoOffset9BBase < c.NumCblockInfo,
                 $"u2c[{i}] base {u.InfoOffset9BBase} is outside CblockInfo count {c.NumCblockInfo}.");
             for (int j = 0; j < 7; j++)
             {
-                uint target = u.InfoOffset9BBase + u.DeltaFromBase[j];
+                uint target = u.InfoOffset9BBase + deltas[j];
                 Require(target < c.NumCblockInfo,
                     $"u2c[{i}] delta[{j}] resolves to CblockInfo {target}, outside {c.NumCblockInfo}.");
             }
@@ -113,8 +116,10 @@ public static class PackizardNativeNapsValidator
                 $"CblockInfo[{index}] tweak index exceeds 28 bits.");
             Require(e.KeyTableIdx <= 3,
                 $"CblockInfo[{index}] key table index exceeds 2 bits.");
-            Require(e.CoffsetStart256K <= 0xFFFFFF,
-                $"CblockInfo[{index}] coffsetStart256K exceeds 24 bits.");
+            // The modeled RUN record has 15 low bits in word0 plus byte[8] = 23 physically serialized bits.
+            // Do not advertise the nominal 24-bit label and then silently drop bit 23.
+            Require(e.CoffsetStart256K <= 0x7FFFFF,
+                $"CblockInfo[{index}] coffsetStart256K 0x{e.CoffsetStart256K:X} exceeds the 23 physically serialized bits.");
         }
     }
 

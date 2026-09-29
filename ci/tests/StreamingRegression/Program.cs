@@ -1,4 +1,5 @@
 using LibProsperoPkg.PFS;
+using LibProsperoPkg.PFS.Compression.Oodle;
 using LibProsperoPkg.PKG;
 
 static void Check(bool condition, string message)
@@ -16,6 +17,50 @@ static void CheckDataBlocksEquivalent(
 }
 
 static long AlignUp(long value, long alignment) => (value + alignment - 1) & ~(alignment - 1);
+
+static int[] KrakenFlags(bool multi) => multi
+    ? [0x22, 0x02, 0x12, 0x32, 0x23, 0x03, 0x13, 0x33, 0x00, 0x20]
+    : [0x02, 0x00, 0x22, 0x20];
+
+static byte[] DecodeCanonicalData(string encodedPath, IReadOnlyList<PackizardInnerDataBlock> blocks)
+{
+    byte[] encoded = File.ReadAllBytes(encodedPath);
+    long logicalLength = blocks.Sum(b => (long)b.UncompressedSize);
+    Check(logicalLength <= int.MaxValue, "Regression DATA is too large to decode in-memory");
+    var result = new byte[(int)logicalLength];
+
+    foreach (PackizardInnerDataBlock b in blocks)
+    {
+        Check(b.OnDiskOffset >= 0 && b.OnDiskOffset + b.CompressedSize <= encoded.LongLength,
+            $"DATA block {b.BlockIndex} is outside encoded stream");
+        var src = encoded.AsSpan((int)b.OnDiskOffset, b.CompressedSize);
+        var dst = result.AsSpan((int)b.LogicalOffset, b.UncompressedSize);
+        if (b.IsStored)
+        {
+            Check(b.CompressedSize == b.UncompressedSize,
+                $"Stored block {b.BlockIndex} size mismatch");
+            src.CopyTo(dst);
+            continue;
+        }
+
+        bool decoded = false;
+        int firstChunk = b.IsMultiChunk ? b.FirstChunkCompressedSize : 0;
+        foreach (int flags in KrakenFlags(b.IsMultiChunk))
+        {
+            try
+            {
+                if (KrakenDecoder.DecodeBlock(src, flags, firstChunk, dst) == KrakenDecodeStatus.Success)
+                {
+                    decoded = true;
+                    break;
+                }
+            }
+            catch { }
+        }
+        Check(decoded, $"Could not decode canonical DATA block {b.BlockIndex}");
+    }
+    return result;
+}
 
 static ProsperoPs5InnerImageResult Synthetic(
     IReadOnlyList<PackizardInnerDataBlock> data,
@@ -48,6 +93,19 @@ static ProsperoPs5InnerImageResult Synthetic(
     };
 }
 
+static void ValidateParsedNaps(byte[] naps)
+{
+    NapsLayoutDocument parsed = ProsperoNapsLayout.Parse(naps);
+    PackizardNativeNapsValidator.ValidateDocument(parsed);
+    foreach (NapsU2cEntry u in parsed.CblockInfoOffsetByUblock)
+    {
+        Check(u.DeltaFromBase.Length == 7, "u2c did not round-trip seven deltas");
+        foreach (byte delta in u.DeltaFromBase)
+            Check(u.InfoOffset9BBase + delta < parsed.CblockInfos.Count,
+                "u2c points outside CblockInfo table");
+    }
+}
+
 string scratch = Path.Combine(Path.GetTempPath(), $"packizard-regression-{Guid.NewGuid():N}");
 Directory.CreateDirectory(scratch);
 string? oldTmp = Environment.GetEnvironmentVariable("TMP");
@@ -58,7 +116,8 @@ Environment.SetEnvironmentVariable("TEMP", scratch);
 Environment.SetEnvironmentVariable("TMPDIR", scratch);
 try
 {
-    // File-local native DATA must be deterministic regardless of memory vs disk-backed source.
+    // Ordinary files must share canonical DATA blocks. This is the structural fix for dense-file u2c
+    // overflow: Cblock density follows logical bytes, not filesystem object count.
     byte[] sample = new byte[0x90017];
     new Random(17).NextBytes(sample);
     Array.Clear(sample, 0x40000, 0x30000);
@@ -102,20 +161,42 @@ try
     Check(File.ReadAllBytes(memoryEncoded).AsSpan().SequenceEqual(File.ReadAllBytes(diskEncoded)),
         "Native DATA differs between memory and disk sources");
     CheckDataBlocksEquivalent(memoryData.Blocks, diskData.Blocks);
-    int expectedFileLocalBlocks =
-        (aLength + PackizardNativeDataStream.UBlockSize - 1) / PackizardNativeDataStream.UBlockSize +
-        (bLength + PackizardNativeDataStream.UBlockSize - 1) / PackizardNativeDataStream.UBlockSize;
-    Check(memoryData.Blocks.Count == expectedFileLocalBlocks,
-        $"Native DATA did not preserve file-local block boundaries: {memoryData.Blocks.Count}/{expectedFileLocalBlocks}");
-    Check(memoryData.Blocks[0].FileStart && memoryData.Blocks.Any(b => b.FileIndex == 1 && b.FileStart),
-        "Native DATA lost file-start markers");
-    Console.WriteLine("PASS native file-local DATA memory/disk equivalence");
+    int canonicalCount = (sample.Length + PackizardNativeDataStream.UBlockSize - 1)
+        / PackizardNativeDataStream.UBlockSize;
+    Check(memoryData.Blocks.Count == canonicalCount,
+        $"Ordinary file boundary manufactured DATA blocks: {memoryData.Blocks.Count}/{canonicalCount}");
+    Check(memoryData.Blocks.Any(b => b.ContainsFileBoundary && b.FirstFileIndex == 0 && b.LastFileIndex == 1),
+        "No canonical DATA block crossed the a.bin/b.bin boundary");
+    Check(DecodeCanonicalData(memoryEncoded, memoryData.Blocks).AsSpan().SequenceEqual(sample),
+        "Canonical cross-file DATA did not decode back to the logical byte stream");
+    Console.WriteLine("PASS cross-file canonical DATA memory/disk/decode equivalence");
 
-    // End-to-end assembly must preserve the same native block map and NAPS bytes.
+    // A raw/module source is a codec barrier, but normal neighbours can still coalesce independently.
+    byte[] n0 = Enumerable.Repeat((byte)0x11, 96 * 1024).ToArray();
+    byte[] raw = Enumerable.Repeat((byte)0x42, 24 * 1024).ToArray();
+    byte[] n1 = Enumerable.Repeat((byte)0x33, 96 * 1024).ToArray();
+    string barrierPath = Path.Combine(scratch, "barrier.data");
+    var barrier = PackizardNativeDataStream.Build(new[]
+    {
+        new PackizardLogicalDataSource { Path="/n0", LogicalOffset=0, Length=n0.Length, Data=n0 },
+        new PackizardLogicalDataSource { Path="/module", LogicalOffset=n0.Length, Length=raw.Length, Data=raw, ForceRaw=true },
+        new PackizardLogicalDataSource { Path="/n1", LogicalOffset=n0.Length + raw.Length, Length=n1.Length, Data=n1 },
+    }, barrierPath);
+    Check(barrier.Blocks.Count == 3, $"Raw barrier topology unexpected: {barrier.Blocks.Count} blocks");
+    Check(barrier.Blocks[1].ForceRaw && barrier.Blocks[1].IsStored,
+        "Raw barrier was not stored verbatim");
+    byte[] barrierExpected = n0.Concat(raw).Concat(n1).ToArray();
+    Check(DecodeCanonicalData(barrierPath, barrier.Blocks).AsSpan().SequenceEqual(barrierExpected),
+        "Raw barrier DATA did not reconstruct exactly");
+    Console.WriteLine("PASS raw/module barrier preserves exact bytes without per-file normal blocks");
+
+    // End-to-end assembler: memory/file-backed builds must produce identical inner bytes, canonical map,
+    // and native NAPS. The old reference ReconstructMount reader is intentionally NOT used here because
+    // it splits every Cblock at fidx file boundaries and therefore cannot model cross-file DATA blocks.
     var inputs = new[]
     {
-        new ProsperoPs5InnerFile { Path = "/sample.bin", Data = sample },
-        new ProsperoPs5InnerFile { Path = "/nested/zeros.bin", Data = new byte[8192] },
+        new ProsperoPs5InnerFile { Path = "/a.bin", Data = sample[..aLength] },
+        new ProsperoPs5InnerFile { Path = "/b.bin", Data = sample[aLength..] },
         new ProsperoPs5InnerFile { Path = "/empty.bin", Data = Array.Empty<byte>() },
     };
     var assembler = new ProsperoPs5InnerImageAssembler(0, 0);
@@ -130,82 +211,63 @@ try
     Check(streamed.ImageFilePath is not null && streamed.Image.Length == 0,
         "Expected a file-backed inner image");
     Check(memory.Image.AsSpan().SequenceEqual(File.ReadAllBytes(streamed.ImageFilePath!)),
-        "Inner image differs");
+        "Inner image differs between memory/file-backed assembly");
     Check(memory.ImageLength == streamed.ImageLength, "Inner image length differs");
     CheckDataBlocksEquivalent(memory.DataBlocks, streamed.DataBlocks);
+    Check(memory.DataBlocks.Count < inputs.Sum(x => x.Data.Length == 0 ? 0 : 1) + 3,
+        "Assembler reverted to one block per ordinary file");
     byte[] memoryNaps = PackizardNativeNapsEngine.Generate(memory);
-    Check(memoryNaps.AsSpan().SequenceEqual(PackizardNativeNapsEngine.Generate(streamed)),
+    byte[] streamedNaps = PackizardNativeNapsEngine.Generate(streamed);
+    Check(memoryNaps.AsSpan().SequenceEqual(streamedNaps),
         "Native NAPS differs for a file-backed image");
-
-    // Keep the reconstructed-mount gate. The current reference reader is deliberately conservative
-    // and is not the authority for every NAPS layout detail, but a failure here is still diagnostic and
-    // must never be silently converted into a green test.
-    var rebuilt = ProsperoPs5InnerImageReader.ReconstructMount(
-        memory.Image,
-        memoryNaps,
-        memory.Ndblock * 0x10000L);
-    var rebuiltFiles = ProsperoPs5InnerImageReader.ReadFileTree(rebuilt.Mount, rebuilt.SuperblockOffset)
-        .ToDictionary(f => f.Path, StringComparer.Ordinal);
-    foreach (ProsperoPs5InnerFile expected in inputs)
-    {
-        string key = expected.Path.TrimStart('/');
-        Check(rebuiltFiles.TryGetValue(key, out ProsperoPs5InnerFileEntry? actual),
-            $"Reconstructed mount is missing {key}");
-        Check(actual!.Size == expected.Data.LongLength,
-            $"Reconstructed size differs for {key}: {actual.Size}/{expected.Data.LongLength}");
-        Check(rebuilt.Mount.AsSpan((int)actual.LogicalOffset, checked((int)actual.Size))
-                .SequenceEqual(expected.Data),
-            $"Reconstructed bytes differ for {key}");
-    }
+    ValidateParsedNaps(memoryNaps);
     File.Delete(streamed.ImageFilePath!);
-    Console.WriteLine("PASS native inner image + NAPS + reconstructed mount equivalence");
+    Console.WriteLine("PASS native assembler + NAPS deterministic memory/file-backed equivalence");
 
-    // Hostile density case: 20k tiny independent files occupy only ~1.2 MiB logically but create 20k
-    // file-local DATA blocks. Until a cross-file block strategy is proven against real golden fixtures,
-    // this topology must be rejected explicitly rather than wrapped/clamped into corrupt u2c bytes.
+    // Exact hostile class behind the real delta=19945 failure: 20,000 tiny files occupy ~1.2 MiB.
+    // They must collapse to five logical DATA blocks and BUILD SUCCESSFULLY, not be rejected.
     const int tinyFileCount = 20000;
     const int tinySize = 64;
     var tinySources = new List<PackizardLogicalDataSource>(tinyFileCount);
     long tinyLogical = 0;
+    var tinyExpected = new byte[tinyFileCount * tinySize];
     for (int i = 0; i < tinyFileCount; i++)
     {
         byte[] bytes = new byte[tinySize];
         bytes[0] = (byte)i;
+        bytes[^1] = (byte)(i >> 8);
+        Buffer.BlockCopy(bytes, 0, tinyExpected, i * tinySize, tinySize);
         tinySources.Add(new PackizardLogicalDataSource
         {
             Path = $"/tiny/{i:D5}.bin",
             LogicalOffset = tinyLogical,
             Length = tinySize,
             Data = bytes,
-            ForceRaw = false,
             OwnerFlag = i == 0 ? 0u : 1u,
         });
         tinyLogical += tinySize;
     }
     string tinyPath = Path.Combine(scratch, "tiny.data");
     var tiny = PackizardNativeDataStream.Build(tinySources, tinyPath);
-    Check(tiny.Blocks.Count == tinyFileCount,
-        $"File-local DATA did not preserve one block per tiny file: {tiny.Blocks.Count}/{tinyFileCount}");
-    try
-    {
-        _ = PackizardNativeNapsEngine.Generate(
-            Synthetic(tiny.Blocks, tinyLogical, tiny.EncodedLength));
-        throw new Exception("Expected dense-file u2c budget rejection");
-    }
-    catch (NotSupportedException e)
-    {
-        Check(e.Message.Contains("u2c group overflow", StringComparison.Ordinal) ||
-              e.Message.Contains("budget violation", StringComparison.Ordinal),
-            $"Dense-file rejection did not identify the u2c budget: {e.Message}");
-        Check(e.Message.Contains("span=", StringComparison.Ordinal) &&
-              e.Message.Contains("std=", StringComparison.Ordinal) &&
-              e.Message.Contains("run=", StringComparison.Ordinal),
-            $"Dense-file rejection lacks topology diagnostics: {e.Message}");
-    }
-    Console.WriteLine("PASS dense tiny-file topology is rejected explicitly without lossy u2c encoding");
+    int expectedTinyBlocks = checked((int)((tinyLogical + 0x3ffff) / 0x40000));
+    Check(tiny.Blocks.Count == expectedTinyBlocks,
+        $"Dense tiny files created {tiny.Blocks.Count} DATA blocks; expected {expectedTinyBlocks}");
+    Check(tiny.Blocks.All(b => b.ContainsFileBoundary),
+        "Dense canonical blocks did not record crossed file boundaries");
+    Check(DecodeCanonicalData(tinyPath, tiny.Blocks).AsSpan().SequenceEqual(tinyExpected),
+        "Dense canonical DATA does not reconstruct the 20k-file logical stream");
 
-    // Exercise the upper byte of the uint24 base. One large file keeps each group representable while
-    // making the CblockInfo table large enough to exceed 0xffff.
+    byte[] denseNaps = PackizardNativeNapsEngine.Generate(
+        Synthetic(tiny.Blocks, tinyLogical, tiny.EncodedLength));
+    NapsLayoutDocument denseDoc = ProsperoNapsLayout.Parse(denseNaps);
+    PackizardNativeNapsValidator.ValidateDocument(denseDoc);
+    Check(denseDoc.CblockInfos.Count < 64,
+        $"Dense 20k-file topology still inflated CblockInfo to {denseDoc.CblockInfos.Count}");
+    Check(denseDoc.CblockInfoOffsetByUblock.All(u => u.DeltaFromBase.All(d => d <= 255)),
+        "Dense u2c emitted an impossible delta");
+    Console.WriteLine($"PASS 20k tiny files -> {tiny.Blocks.Count} DATA blocks, {denseDoc.CblockInfos.Count} CblockInfos, native NAPS succeeds");
+
+    // Exercise the upper byte of the uint24 u2c base without violating the 8-bit local delta budget.
     const int wideCount = 65552;
     var wideBlocks = new PackizardInnerDataBlock[wideCount];
     long widePhysical = 0;
@@ -221,28 +283,22 @@ try
             FirstChunkCompressedSize: 0x100,
             ForceRaw: false,
             OwnerFlag: 1,
-            FileIndex: 0,
-            BlockIndexInFile: i,
-            FileStart: i == 0);
+            BlockIndex: i,
+            FirstFileIndex: 0,
+            LastFileIndex: 0,
+            ContainsFileBoundary: false);
         widePhysical += 0x100;
     }
-    var wideSynthetic = Synthetic(wideBlocks, (long)wideCount * 0x40000, widePhysical);
-    var wideDoc = ProsperoNapsLayout.Parse(PackizardNativeNapsEngine.Generate(wideSynthetic));
+    byte[] wideNaps = PackizardNativeNapsEngine.Generate(
+        Synthetic(wideBlocks, (long)wideCount * 0x40000, widePhysical));
+    NapsLayoutDocument wideDoc = ProsperoNapsLayout.Parse(wideNaps);
     Check(wideDoc.CblockInfoOffsetByUblock.Any(entry => entry.InfoOffset9BBase > 0xFFFF),
         "Native NAPS never exercised the upper byte of a 24-bit u2c base");
-    foreach (NapsU2cEntry entry in wideDoc.CblockInfoOffsetByUblock)
-    {
-        byte[] encoded = ProsperoNapsLayout.EncodeU2cEntry(entry);
-        NapsU2cEntry decoded = ProsperoNapsLayout.DecodeU2cEntry(encoded);
-        Check(decoded.InfoOffset9BBase == entry.InfoOffset9BBase,
-            "u2c uint24 base failed encode/decode round-trip");
-        Check(decoded.DeltaFromBase.SequenceEqual(entry.DeltaFromBase),
-            "u2c seven-delta vector failed encode/decode round-trip");
-    }
+    ValidateParsedNaps(wideNaps);
     Console.WriteLine("PASS native u2c uint24 base + seven deltas beyond 0xffff");
 
-    // Exact class implicated by the real 19945 failure: physical compression must never pull logical
-    // metadata into DATA. This test intentionally makes physical DATA far smaller than logical DATA.
+    // Highly compressible DATA: physical size may be tiny, but metadata logical placement must remain
+    // beyond the full uncompressed DATA interval. This guards the geometry collapse behind huge jumps.
     byte[] veryCompressible = new byte[24 * 0x40000];
     var geometry = assembler.Build(new[]
     {
@@ -252,11 +308,11 @@ try
         $"Metadata overlaps logical DATA: meta=0x{geometry.MetaBaseLogical:X}, dataEnd=0x{geometry.DataEndLogical:X}");
     Check(geometry.ImageLength < geometry.MetaBaseLogical,
         "Geometry regression did not exercise physical compression below logical mount size");
-    Check(PackizardNativeNapsEngine.Generate(geometry).Length > 0,
-        "Native NAPS failed on compressed/logical geometry split");
+    ValidateParsedNaps(PackizardNativeNapsEngine.Generate(geometry));
     if (geometry.ImageFilePath is not null) File.Delete(geometry.ImageFilePath);
     Console.WriteLine("PASS logical metadata geometry is independent of compressed physical size");
 
+    // Source failures must still clean temporary files.
     var fsTree = new ProsperoFsDir();
     fsTree.Files.Add(new ProsperoFsFile(stream =>
     {
@@ -344,11 +400,10 @@ try
         Check(large.Placements[0].UncompressedSize == length,
             "64-bit source length was truncated");
         Check(large.DataBlocks.Count == (length + 0x3ffff) / 0x40000,
-            "Large file-local DATA block count is incorrect");
+            "Large canonical DATA block count is incorrect");
         Check(GC.GetTotalAllocatedBytes() - allocatedBefore < 512L * 1024 * 1024,
             "Large input unexpectedly allocated payload-sized buffers");
-        Check(PackizardNativeNapsEngine.Generate(large).Length > 0,
-            "Large native NAPS is empty");
+        ValidateParsedNaps(PackizardNativeNapsEngine.Generate(large));
         File.Delete(large.ImageFilePath!);
         Console.WriteLine("PASS single file larger than 2 GiB through native DATA/NAPS");
     }

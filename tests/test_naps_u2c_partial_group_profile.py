@@ -7,6 +7,7 @@ PROFILE = ROOT / "ci" / "packizard_native_naps_profile.py"
 DATA = ROOT / "ci" / "native_naps" / "PackizardNativeDataStream.cs"
 NAPS = ROOT / "ci" / "native_naps" / "PackizardNativeNapsEngine.cs"
 WRITER = ROOT / "ci" / "native_naps" / "PackizardNativeNapsWriter.cs"
+READER = ROOT / "ci" / "native_naps" / "PackizardNativeNapsReader.cs"
 VALIDATOR = ROOT / "ci" / "native_naps" / "PackizardNativeNapsValidator.cs"
 SHIM = ROOT / "ci" / "naps_u2c_partial_group_profile.py"
 
@@ -15,14 +16,13 @@ class PackizardNativeNapsSourceTests(unittest.TestCase):
     def test_legacy_entry_point_is_only_a_native_delegate(self):
         text = SHIM.read_text(encoding="utf-8")
         self.assertIn("import packizard_native_naps_profile as native", text)
-        self.assertIn("native.apply(Path(args.root))", text)
+        self.assertIn("native.apply(root)", text)
+        self.assertIn("PackizardNativeNapsReader.cs", text)
         self.assertNotIn("_fix_file_local_data_geometry", text)
         self.assertNotIn("numCblockInfo - 1", text)
 
     def test_native_data_stream_coalesces_ordinary_file_boundaries(self):
         text = DATA.read_text(encoding="utf-8")
-        # Contract, not prose: ordinary sources feed a shared pending U-block buffer and file changes
-        # mark diagnostics instead of flushing the block. Only ForceRaw calls FlushPending at a boundary.
         self.assertIn("var pending = new byte[UBlockSize]", text)
         self.assertIn("pendingLastFile != fileIndex", text)
         self.assertIn("pendingCrossesBoundary = true", text)
@@ -47,22 +47,26 @@ class PackizardNativeNapsSourceTests(unittest.TestCase):
         self.assertIn("metadata overlaps DATA", text)
         self.assertIn("This is a topology failure", text)
         self.assertIn("PackizardNativeNapsWriter.Serialize(doc)", text)
-        # Comments may name the implementation being replaced; only executable calls are forbidden.
         self.assertNotIn("ProsperoNapsLayoutBuilder.Build", text)
         self.assertNotIn("ProsperoNwonlyNapsGenerator.Generate", text)
         self.assertNotIn("ProsperoNapsLayout.BuildLayout(", text)
         self.assertNotIn("% 256", text)
 
-    def test_packizard_owns_binary_writer_and_validator(self):
+    def test_packizard_owns_binary_writer_reader_and_validator(self):
         writer = WRITER.read_text(encoding="utf-8")
+        reader = READER.read_text(encoding="utf-8")
         validator = VALIDATOR.read_text(encoding="utf-8")
         self.assertIn("PackizardNativeNapsValidator.ValidateDocument(document)", writer)
         self.assertIn("WriteHeader", writer)
         self.assertIn("WriteU2c", writer)
         self.assertIn("WriteCblock", writer)
         self.assertNotIn("ProsperoNapsLayout.BuildLayout(", writer)
+        self.assertIn("counts.NumFiles + 1", reader)
+        self.assertIn("ReadU2c", reader)
+        self.assertIn("ReadCblock", reader)
         self.assertIn("0xFFFFFF", validator)
         self.assertIn("0xFFFFFFFFFFUL", validator)
+        self.assertIn("0x7FFFFF", validator)
         self.assertIn("u2c", validator)
 
     def test_profile_bypasses_legacy_naps_generator_and_uses_logical_mount_geometry(self):

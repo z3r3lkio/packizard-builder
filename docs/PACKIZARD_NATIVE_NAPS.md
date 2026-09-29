@@ -1,246 +1,157 @@
 # Packizard-native NAPS design
 
-This document defines the invariants for Packizard's own `naps_pkg_layout.dat` planner/generator.
-The goal is not to silence a particular `u2c delta` exception. The goal is to make every logical,
-physical and bit-width relationship explicit and testable before a PKG is emitted.
+Packizard owns the NAPS path used by the integrated PKG builder. The goal is not to patch individual
+`u2c` overflows after they occur; the planner makes an unencodable topology impossible by construction
+and refuses lossy fallbacks.
 
-## Why the old design fails
+## Why the old topology failed
 
-`u2c` maps each group of eight logical 256 KiB U-blocks into the `CblockInfo` table. The binary
-shape is a 24-bit base index plus seven 8-bit deltas. For a real U-block `u` in a group with base
-`b`, the selected `CblockInfo` index must therefore satisfy:
+Real game trees exposed several independent failure modes:
 
-```
-0 <= first[u] - b <= 255
-```
+- ordinary file boundaries created too many DATA/CblockInfo records inside a small logical window;
+- a compressed file was at one point collapsed into one descriptor even though the encoder worked in
+  256 KiB blocks;
+- `u2c` was derived from descriptor start offsets rather than logical interval coverage;
+- RUN bases inflated CblockInfo indexes and therefore the one-byte local `u2c` deltas;
+- physical compressed size leaked into logical mount geometry;
+- padding could overlap the final partial DATA interval;
+- zero-length files could manufacture descriptors;
+- 24-bit/40-bit fields could previously be masked instead of rejected explicitly.
 
-A value such as `524` or `19945` is not something that can be clamped, wrapped or truncated. It
-means the planned topology cannot be represented by the descriptor being written.
+The two observed real-package signatures were:
 
-The observed real-world failure
-
-```
-real U-block 8463
-first = 29493
-base  = 9548
-delta = 19945
-numUBlocks = 8471
-numCblockInfo = 29503
+```text
+u2c delta 524   (real U-block 96431)
+u2c delta 19945 (real U-block 8463)
 ```
 
-is especially diagnostic. U-block 8463 lies in the group beginning at U-block 8456. The planner
-therefore jumps almost twenty thousand `CblockInfo` indices inside one eight-U-block window.
-That is a topology discontinuity, not a normal compression-size effect.
+The second is the decisive dense-tree case: roughly twenty thousand CblockInfo indexes appeared inside
+one 8-U-block window. No correct byte cast, modulo or wider temporary fixes that layout; the topology
+itself had to change.
 
-## Coordinate systems must never be mixed
+## Native pipeline
 
-Packizard carries two independent geometries:
-
-1. **Logical mount geometry** — uncompressed offsets visible to the PFS mount and described by
-   `fidx`, U-block numbers and metadata logical placement.
-2. **Physical encoded geometry** — compressed/stored byte offsets inside `pfs_image.dat`.
-
-These are intentionally different. Compression can make the physical DATA region dramatically
-smaller than its logical mount span.
-
-The previous path derived the metadata logical base from the physical compressed DATA length while
-file logical offsets were accumulated from uncompressed file sizes. With sufficiently compressible
-DATA this places metadata logically inside the still-live DATA address range. Sorting Cblock records
-by logical position while retaining their physical/emission indices can then make `first[u]` jump
-from an early DATA index to a late metadata/tail index in a single u2c group.
-
-Native invariant:
-
-```
-DataEndLogical <= MetaBaseLogical <= MountSizeLogical
-```
-
-`MetaBaseLogical` is derived only from logical DATA length/alignment/reserve. Physical block-info and
-metadata byte offsets are derived only from encoded DATA length/alignment. A build aborts if these
-coordinate systems cross.
-
-## Every class of u2c failure we guard
-
-### 1. Logical/physical geometry collapse
-
-Metadata base or mount size is calculated from compressed physical bytes instead of logical bytes.
-Result: metadata overlaps DATA in logical space and `first[u]` can jump thousands of indices.
-
-Guard: explicit logical/physical fields plus `MetaBaseLogical >= DataEndLogical` validation.
-
-### 2. Excess CblockInfo density inside eight U-blocks
-
-Even with correct coordinates, more than 255 CblockInfo index steps can occur between the first and
-last selected U-block in one group. Sources include pathological numbers of tiny file segments,
-fragmentation, or an encoder that manufactures multiple records for boundaries that do not need
-them.
-
-Guard: a pre-serialization budget report for every group (`base/min/max/span/std/run`). No clamp.
-
-### 3. RUN-base inflation
-
-RUN records consume the same CblockInfo index space as ordinary block records. Opening a RUN at every
-file, at every stored/compressed transition, and again periodically can make an otherwise valid
-layout exceed the one-byte delta budget.
-
-Guard: RUNs are explicit plan records; their count is included in the group budget. Adding a RUN is
-never treated as a free operation.
-
-### 4. Wrong block granularity
-
-Treating an entire compressed file as one block, inventing a block per filesystem object regardless
-of logical U-block geometry, or losing the encoder's true block map changes which CblockInfo should
-serve each U-block.
-
-Guard: Packizard records exact DATA block geometry (`logical offset`, `physical offset`, encoded
-length, stored/Kraken decision, chunk split) in a canonical intermediate representation.
-
-### 5. Non-monotonic logical-to-Cblock ordering
-
-If Cblocks are emitted in one order but later sorted by logical offset, the selected index can move
-backward or jump across unrelated late records. Overlapping DATA/metadata is one cause; an invalid
-plan order is another.
-
-Guard: monotonic logical checks before the Cblock walk and negative-delta rejection.
-
-### 6. Partial final u2c group
-
-Unused slots in the last group are not real U-blocks. Pointing those slots at a distant terminator can
-create a fake overflow even when every real U-block is representable.
-
-Guard: unused deltas are zero. Validation only budgets real U-blocks.
-
-### 7. Incorrect u2c packing
-
-One u2c entry is modeled as one uint24 base followed by seven delta bytes. A previous experimental
-builder phase-shifted the bytes across adjacent groups. That disagrees with the descriptor model and
-independent decoders and can manufacture incorrect bases/deltas.
-
-Guard: native code constructs `base + seven deltas` directly and round-trips all 10 bytes.
-
-### 8. 24-bit base/count overflow
-
-Header U-block count, outer-block count, CblockInfo count/base indices are finite-width fields. A
-large package can exceed them independently of the 8-bit delta constraint.
-
-Guard: explicit 24-bit checks before serialization.
-
-### 9. 40-bit fidx overflow
-
-File/mount logical offsets in fidx are 40-bit values.
-
-Guard: reject offsets outside `0..0xffffffffff`.
-
-### 10. CblockInfo field overflow
-
-RUN physical bases, tweak indices, compressed-offset fragments, uncompressed-offset fragments and
-chunk lengths have independent bit widths. A layout can satisfy u2c and still be unencodable here.
-
-Guard: every field is range-checked at the model/codec boundary. No masking of an oversized source
-value is allowed.
-
-### 11. Zero-length files and duplicate logical starts
-
-A zero-byte filesystem object has an fidx/inode identity but no DATA U-block. Manufacturing a DATA
-Cblock for it creates duplicate starts and can destabilize u2c selection.
-
-Guard: zero-length files contribute no DATA block.
-
-### 12. Padding/metadata collision
-
-The final partial DATA block, padding/hole descriptor and first metadata block must not claim the same
-logical U-block accidentally.
-
-Guard: the planner owns a single logical interval map and rejects overlap before Cblock generation.
-
-### 13. Raw/Kraken transition without a valid cursor anchor
-
-A change in physical stream semantics can require a RUN re-anchor. Missing it produces incorrect
-physical reconstruction even if u2c indices fit; adding too many RUNs can cause case 3.
-
-Guard: cursor reconstruction is part of round-trip tests, and the RUN scheduler is budget-aware.
-
-### 14. Section-count/alignment disagreement
-
-Real implementations disagree on some large-layout details (especially trailing u2c count/section
-alignment). A serializer can therefore produce a self-consistent blob that is not console-correct.
-
-Guard: Packizard will keep binary-codec assumptions isolated behind golden-fixture tests. Self
-round-trip is necessary but not sufficient.
-
-### 15. CblockInfo bitfield disagreement
-
-Public reverse-engineered implementations do not currently agree on every high-bit field of a
-9-byte CblockInfo record. This is exactly the kind of uncertainty that must not be hidden behind a
-third-party implementation.
-
-Guard: topology/planning is Packizard-owned now; replacement of the remaining byte codec is gated on
-real descriptor fixtures whose bytes, decoded fields and reconstruction behavior are known.
-
-## Native architecture
-
-The target design is deliberately layered:
-
-```
-filesystem / game tree
+```text
+filesystem / AFID logical order
         |
         v
-LogicalLayoutPlanner
-  - file logical offsets
-  - DataEndLogical
-  - metadata logical base
-  - mount logical size
+PackizardNativeDataStream
         |
+        |-- ordinary files coalesce across file boundaries
+        |-- <= 256 KiB coding blocks
+        |-- raw/module payloads are explicit codec barriers
+        |-- exact logical + physical geometry recorded once
         v
-DataBlockEncoder
-  - exact 256 KiB logical coverage
-  - stored/Kraken decision
-  - exact physical byte spans
+PackizardNativeNapsEngine
         |
+        |-- logical interval plan
+        |-- RUN scheduling (first/gap/storage transition/periodic re-anchor)
+        |-- DATA -> padding -> metadata -> terminator coverage
+        |-- one CblockInfo plan
+        |-- interval-based U-block lookup
+        |-- per-group u2c budget analysis
         v
-NapsPlan
-  - DATA / padding / metadata / terminator intervals
-  - RUN schedule
+PackizardNativeNapsValidator
         |
-        +--> BudgetAnalyzer
-        |      - per-group base/deltas
-        |      - all field widths
-        |      - monotonicity/overlap
-        |
+        |-- header widths
+        |-- fidx 40-bit range/monotonicity
+        |-- u2c base/delta targets
+        |-- CblockInfo field widths
         v
-NativeNapsCodec
-  - header
-  - fidx
-  - u2c
-  - CblockInfo
+PackizardNativeNapsWriter
         |
+        |-- Packizard-owned binary header
+        |-- outer digest / shuffle sections
+        |-- fidx
+        |-- uint24 base + seven uint8 deltas
+        |-- 9-byte CblockInfo packing
         v
 naps_pkg_layout.dat
 ```
 
-A failure at any layer reports the logical U-block range, physical range, Cblock index range, region
-(DATA/padding/metadata/terminator), RUN/STD counts, and exact field that cannot be represented.
+`ProsperoNwonlyNapsGenerator`, `ProsperoNapsLayoutBuilder` and the upstream NAPS serializer are not used
+by the native package path. LibProsperoPkg remains the generic PKG/PFS/crypto substrate and its NAPS
+model types can still be used as DTOs or by tests to parse the bytes Packizard emitted.
 
-## Validation gates
+## Canonical DATA blocks
 
-A native build is not considered console-ready merely because it reaches `Done: package.pkg`.
-Before promotion it must pass:
+The key rule is that a normal filesystem boundary is **not** a compression-block boundary.
 
-1. in-memory vs file-backed DATA equivalence;
-2. deterministic DATA block-map equivalence;
-3. complete `pfs_image.dat + NAPS -> reconstructed mount` byte-for-byte comparison;
-4. highly compressible DATA where physical size is far below logical size;
-5. hostile tiny-file density;
-6. large u2c bases above `0xffff` to exercise the third base byte;
-7. partial and exact-multiple-of-eight U-block counts;
-8. stored/Kraken transitions and RUN windows;
-9. zero-byte and boundary-sized files;
-10. >2 GiB file streaming without payload-sized allocations;
-11. golden real `naps_pkg_layout.dat` fixtures for every binary-field interpretation;
-12. final installation/mount/launch test on PS5.
+For example, 20,000 files of 64 bytes contain only 1,280,000 logical bytes. Packizard emits about five
+256 KiB DATA blocks, not 20,000 blocks. A canonical block records the first/last file it intersects for
+diagnostics, but NAPS sees the logical byte stream rather than the object count.
 
-## Non-negotiable rule
+Raw or signed-module content remains a codec barrier. That preserves verbatim bytes and known physical
+alignment rules without reintroducing one-block-per-normal-file behavior.
 
-No native Packizard NAPS path may use `delta % 256`, `min(delta, 255)`, saturation, truncation or a
-masked oversized base as a compatibility strategy. If the model says a value does not fit, the
-planner must change or the build must stop with diagnostics.
+## Logical intervals, not descriptor starts
+
+Every real STD descriptor carries an interval:
+
+```text
+[LogicalStart, LogicalEnd)
+```
+
+For each U-block start `u * 0x40000`, the planner selects the STD interval that actually contains that
+byte. This handles:
+
+- a DATA block that begins before an U-block boundary and crosses it;
+- a short raw barrier inside an otherwise canonical stream;
+- one padding descriptor covering several U-blocks;
+- metadata blocks at their exact logical positions.
+
+The old approximation, "first STD whose start is >= target", can skip the descriptor that already
+covers the target and is no longer used.
+
+## u2c contract
+
+One `u2c` record represents eight logical U-blocks:
+
+```text
+uint24 base
+uint8  delta[7]
+```
+
+For every group Packizard computes the exact selected CblockInfo indexes before serialization and
+requires:
+
+```text
+base <= 0xFFFFFF
+0 <= target[i] - base <= 255
+selected indexes are monotonic
+selected targets are inside CblockInfo[]
+```
+
+No truncation, `% 256`, clamping or wrapping is permitted. A violation is a planner bug/topology
+problem and produces a diagnostic containing group, U-block range, base/max indexes, region names and
+RUN/STD counts.
+
+A final partial group zero-fills nonexistent delta slots. When `NumUBlocks` is an exact multiple of
+8, the format's trailing group maps to the terminator explicitly.
+
+## Logical versus physical geometry
+
+Two coordinate systems remain separate throughout the build:
+
+- **logical**: file offsets, DATA end, metadata base, mount size, U-block coverage;
+- **physical**: encoded DATA offsets/sizes, block-info location, compressed metadata location.
+
+Compression may make `pfs_image.dat` much smaller than the reconstructed mount. Physical size must
+never pull metadata into the logical DATA interval.
+
+## Current regression gates
+
+CI covers, among other cases:
+
+1. cross-file canonical block formation and byte-for-byte decode;
+2. raw/module barriers;
+3. memory-backed vs file-backed deterministic inner image and NAPS output;
+4. 20,000 tiny files succeeding with O(U-blocks), not O(files), CblockInfo density;
+5. uint24 `u2c` bases above `0xffff`;
+6. highly compressible DATA where physical size is far below logical size;
+7. zero-byte files;
+8. package-stage cleanup on injected failures;
+9. sources larger than 2 GiB without payload-sized memory allocation.
+
+Future console-derived fixtures should be added as binary-golden parse/encode cases, especially around
+RUN semantics, raw transitions, metadata padding and very large physical offsets.

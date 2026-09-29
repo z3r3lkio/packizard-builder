@@ -128,7 +128,7 @@ jobs:
         working-directory: build-src
         run: python -m compileall -q .
 
-  package:
+  build:
     name: ${{ matrix.platform }} · ${{ matrix.arch }}
     needs: verify
     strategy:
@@ -174,7 +174,12 @@ jobs:
         if: runner.os == 'Windows'
         working-directory: build-src
         shell: pwsh
-        run: ./build_windows.ps1 -Arch ${{ matrix.arch }}
+        run: |
+          python -m venv .venv312
+          .\.venv312\Scripts\python -m pip install --upgrade pip
+          .\.venv312\Scripts\python -m pip install -r requirements-build.txt
+          .\.venv312\Scripts\python scripts\prepare_pkg_bridge.py --rid "win-${{ matrix.arch }}"
+          .\build_windows.ps1 -Arch ${{ matrix.arch }}
       - name: Build Linux package
         if: runner.os == 'Linux'
         working-directory: build-src
@@ -207,7 +212,7 @@ jobs:
 
   golden:
     name: Golden build
-    needs: package
+    needs: build
     runs-on: ubuntu-24.04
     steps:
       - run: echo "All platform builds completed successfully."

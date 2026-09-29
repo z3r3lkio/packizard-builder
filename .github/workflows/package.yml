@@ -91,12 +91,19 @@ jobs:
           grep -F 'BuildToFile(IReadOnlyList<ProsperoPs5InnerPayload>' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PFS/ProsperoPs5InnerImageBuilder.cs
           grep -F 'BuildForPackageToFile(' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PFS/ProsperoOuterPfsBuilder.cs
           grep -F 'BuildDebugSiSegmentFromFile(' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/ProsperoSiArchive.cs
-          grep -F 'Packizard canonical DATA U-block map' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PFS/ProsperoPs5InnerImageAssembler.cs
+          grep -F 'Packizard canonical DATA block map' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PFS/ProsperoPs5InnerImageAssembler.cs
           grep -F 'private byte[] BuildNativeImage' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PFS/ProsperoPs5InnerImageAssembler.cs
           grep -F 'RoundUp(dataStream.LogicalLength, BlockSize)' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PFS/ProsperoPs5InnerImageAssembler.cs
           grep -F 'PackizardNativeNapsEngine.Generate(asmResult)' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/ProsperoPkgBuilder.cs
+          grep -F 'PackizardNativeNapsWriter.Serialize(doc)' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/PackizardNativeNapsEngine.cs
+          grep -F 'private static void WriteU2c' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/PackizardNativeNapsWriter.cs
+          grep -F 'PackizardNativeNapsValidator.ValidateDocument' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/PackizardNativeNapsWriter.cs
           if grep -Fq 'ProsperoNwonlyNapsGenerator.Generate(asmResult)' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/ProsperoPkgBuilder.cs; then
             echo "Legacy NAPS topology generator leaked into the Packizard-native PKG path" >&2
+            exit 1
+          fi
+          if grep -R -Fq 'ProsperoNapsLayout.BuildLayout' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/PackizardNativeNaps*.cs; then
+            echo "Legacy NAPS serializer leaked into the Packizard-native path" >&2
             exit 1
           fi
           if grep -R -Fq 'LibProsperoPkg.Gui.exe' build-src/core build-src/gui build-src/utils; then

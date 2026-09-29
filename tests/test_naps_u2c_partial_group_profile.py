@@ -21,13 +21,17 @@ class PackizardNativeNapsSourceTests(unittest.TestCase):
 
     def test_native_data_stream_coalesces_ordinary_file_boundaries(self):
         text = DATA.read_text(encoding="utf-8")
-        self.assertIn("ordinary file boundaries do not split blocks", text.lower())
+        # Contract, not prose: ordinary sources feed a shared pending U-block buffer and file changes
+        # mark diagnostics instead of flushing the block. Only ForceRaw calls FlushPending at a boundary.
+        self.assertIn("var pending = new byte[UBlockSize]", text)
+        self.assertIn("pendingLastFile != fileIndex", text)
+        self.assertIn("pendingCrossesBoundary = true", text)
         self.assertIn("ContainsFileBoundary", text)
         self.assertIn("FirstFileIndex", text)
         self.assertIn("LastFileIndex", text)
-        self.assertIn("pendingCrossesBoundary", text)
+        self.assertIn("if (source.ForceRaw)", text)
+        self.assertIn("FlushPending();", text)
         self.assertIn("WholeBlockRaw", text)
-        self.assertIn("ForceRaw", text)
         self.assertNotIn("BlockIndexInFile", text)
         self.assertNotIn("FileStart", text)
 
@@ -39,25 +43,26 @@ class PackizardNativeNapsSourceTests(unittest.TestCase):
         self.assertIn("0xFFFFFF", text)
         self.assertIn("0xFFFFFFFFFFL", text)
         self.assertIn("LogicalEnd", text)
-        self.assertIn("actually covers that byte", text)
+        self.assertIn("std[p].LogicalStart > target || target >= std[p].LogicalEnd", text)
         self.assertIn("metadata overlaps DATA", text)
         self.assertIn("This is a topology failure", text)
-        self.assertIn("PackizardNativeNapsWriter.Serialize", text)
-        self.assertNotIn("ProsperoNapsLayoutBuilder", text)
-        self.assertNotIn("ProsperoNwonlyNapsGenerator", text)
-        self.assertNotIn("ProsperoNapsLayout.BuildLayout", text)
+        self.assertIn("PackizardNativeNapsWriter.Serialize(doc)", text)
+        # Comments may name the implementation being replaced; only executable calls are forbidden.
+        self.assertNotIn("ProsperoNapsLayoutBuilder.Build", text)
+        self.assertNotIn("ProsperoNwonlyNapsGenerator.Generate", text)
+        self.assertNotIn("ProsperoNapsLayout.BuildLayout(", text)
         self.assertNotIn("% 256", text)
 
     def test_packizard_owns_binary_writer_and_validator(self):
         writer = WRITER.read_text(encoding="utf-8")
         validator = VALIDATOR.read_text(encoding="utf-8")
-        self.assertIn("PackizardNativeNapsValidator.ValidateDocument", writer)
+        self.assertIn("PackizardNativeNapsValidator.ValidateDocument(document)", writer)
         self.assertIn("WriteHeader", writer)
         self.assertIn("WriteU2c", writer)
         self.assertIn("WriteCblock", writer)
-        self.assertNotIn("ProsperoNapsLayout.BuildLayout", writer)
-        self.assertIn("24-bit", validator)
-        self.assertIn("40-bit", validator)
+        self.assertNotIn("ProsperoNapsLayout.BuildLayout(", writer)
+        self.assertIn("0xFFFFFF", validator)
+        self.assertIn("0xFFFFFFFFFFUL", validator)
         self.assertIn("u2c", validator)
 
     def test_profile_bypasses_legacy_naps_generator_and_uses_logical_mount_geometry(self):

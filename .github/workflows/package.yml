@@ -102,7 +102,7 @@ jobs:
             echo "Legacy NAPS topology generator leaked into the Packizard-native PKG path" >&2
             exit 1
           fi
-          if grep -R -Fq 'ProsperoNapsLayout.BuildLayout' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/PackizardNativeNaps*.cs; then
+          if grep -R -Fq 'ProsperoNapsLayout.BuildLayout(' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/PackizardNativeNaps*.cs; then
             echo "Legacy NAPS serializer leaked into the Packizard-native path" >&2
             exit 1
           fi

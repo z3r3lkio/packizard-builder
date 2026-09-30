@@ -98,7 +98,7 @@ jobs:
           grep -F 'scripts/prepare_pkg_bridge.py --rid "osx-$arch"' build-src/build_macos.sh
           grep -F 'scripts\prepare_pkg_bridge.py --rid $rid' build-src/build_windows.ps1
           grep -F 'codesign --force --sign - "$app/Contents/MacOS/pkg_bridge/Packizard.PkgBridge"' build-src/build_macos.sh
-          grep -F 'io.github.z3r3lkio.packizard-builder.metainfo.xml' build-src/build_linux.sh
+          grep -F 'packizard-builder.appdata.xml' build-src/build_linux.sh
           grep -F 'Categories=Utility;' build-src/build_linux.sh
           grep -F 'BuildToFile(IReadOnlyList<ProsperoPs5InnerPayload>' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PFS/ProsperoPs5InnerImageBuilder.cs
           grep -F 'BuildForPackageToFile(' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PFS/ProsperoOuterPfsBuilder.cs

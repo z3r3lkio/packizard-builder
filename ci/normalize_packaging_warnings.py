@@ -6,11 +6,23 @@ import argparse
 from pathlib import Path
 
 
+APP_ID = "io.github.z3r3lkio.packizard-builder"
+DESKTOP_FILE = f"{APP_ID}.desktop"
+APPDATA_FILE = f"{APP_ID}.appdata.xml"
+
+
 def replace_once(text: str, old: str, new: str, label: str) -> str:
     count = text.count(old)
     if count != 1:
         raise RuntimeError(f"Expected exactly one {label}; found {count}")
     return text.replace(old, new, 1)
+
+
+def replace_all_required(text: str, old: str, new: str, label: str) -> str:
+    count = text.count(old)
+    if count < 1:
+        raise RuntimeError(f"Expected at least one {label}; found 0")
+    return text.replace(old, new)
 
 
 def patch_main_pyinstaller_spec(root: Path) -> None:
@@ -46,13 +58,24 @@ def patch_linux_script(root: Path) -> None:
         "desktop Categories entry",
     )
 
+    # AppStream validates that the component ID, metadata filename and desktop
+    # launcher ID all describe the same application.  Keep them canonical and
+    # identical instead of mixing the historical packizard-builder.desktop
+    # basename with a reverse-DNS component ID.
+    text = replace_all_required(
+        text,
+        "packizard-builder.desktop",
+        DESKTOP_FILE,
+        "Packizard desktop launcher name",
+    )
+
     cleanup = 'rm -rf -- "$appdir/usr/share/metainfo"'
-    metadata = '''rm -rf -- "$appdir/usr/share/metainfo"
+    metadata = f'''rm -rf -- "$appdir/usr/share/metainfo"
 mkdir -p -- "$appdir/usr/share/metainfo"
-cat > "$appdir/usr/share/metainfo/packizard-builder.appdata.xml" << EOF
+cat > "$appdir/usr/share/metainfo/{APPDATA_FILE}" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>io.github.z3r3lkio.packizard-builder</id>
+  <id>{APP_ID}</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
   <name>Packizard Builder</name>
@@ -60,7 +83,10 @@ cat > "$appdir/usr/share/metainfo/packizard-builder.appdata.xml" << EOF
   <description>
     <p>Packizard Builder provides an integrated desktop workflow for AMPR/LZ4 compression and package creation.</p>
   </description>
-  <launchable type="desktop-id">packizard-builder.desktop</launchable>
+  <developer id="io.github.z3r3lkio">
+    <name>z3r3lkio</name>
+  </developer>
+  <launchable type="desktop-id">{DESKTOP_FILE}</launchable>
   <url type="homepage">https://github.com/z3r3lkio/packizard-builder</url>
   <releases>
     <release version="$version" date="$(date -u +%Y-%m-%d)"/>
@@ -71,7 +97,10 @@ EOF'''
     text = replace_once(text, cleanup, metadata, "AppStream cleanup marker")
 
     path.write_text(text, encoding="utf-8", newline="\n")
-    print("Normalized Linux desktop/AppStream packaging metadata")
+    print(
+        "Normalized Linux desktop/AppStream packaging metadata: "
+        f"{DESKTOP_FILE} + {APPDATA_FILE}"
+    )
 
 
 def main() -> int:

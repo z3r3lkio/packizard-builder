@@ -67,13 +67,22 @@ jobs:
       - name: Install headless Qt system libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0
+          sudo apt-get install -y \
+            libegl1 \
+            libgl1 \
+            libxkbcommon-x11-0 \
+            libxcb-cursor0 \
+            libxcb-icccm4 \
+            libxcb-shape0 \
+            libxcb-keysyms1
       - name: Reconstruct complete source tree
         run: python ci/bootstrap_source.py --output build-src
       - name: Apply Packizard-native NAPS engine
         run: python ci/naps_u2c_partial_group_profile.py --root build-src
       - name: Normalize reconstructed compiler warnings
         run: python ci/normalize_reconstructed_warnings.py --root build-src
+      - name: Normalize packaging warnings
+        run: python ci/normalize_packaging_warnings.py --root build-src
       - name: Build and probe integrated PKG engine
         working-directory: build-src
         run: |
@@ -89,7 +98,8 @@ jobs:
           grep -F 'scripts/prepare_pkg_bridge.py --rid "osx-$arch"' build-src/build_macos.sh
           grep -F 'scripts\prepare_pkg_bridge.py --rid $rid' build-src/build_windows.ps1
           grep -F 'codesign --force --sign - "$app/Contents/MacOS/pkg_bridge/Packizard.PkgBridge"' build-src/build_macos.sh
-          grep -F 'rm -rf -- "$appdir/usr/share/metainfo"' build-src/build_linux.sh
+          grep -F 'io.github.z3r3lkio.packizard-builder.metainfo.xml' build-src/build_linux.sh
+          grep -F 'Categories=Utility;' build-src/build_linux.sh
           grep -F 'BuildToFile(IReadOnlyList<ProsperoPs5InnerPayload>' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PFS/ProsperoPs5InnerImageBuilder.cs
           grep -F 'BuildForPackageToFile(' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PFS/ProsperoOuterPfsBuilder.cs
           grep -F 'BuildDebugSiSegmentFromFile(' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/ProsperoSiArchive.cs
@@ -167,17 +177,28 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0
+          sudo apt-get install -y \
+            libegl1 \
+            libgl1 \
+            libxkbcommon-x11-0 \
+            libxcb-cursor0 \
+            libxcb-icccm4 \
+            libxcb-shape0 \
+            libxcb-keysyms1
       - name: Reconstruct complete source tree
         run: python ci/bootstrap_source.py --output build-src
       - name: Apply Packizard-native NAPS engine
         run: python ci/naps_u2c_partial_group_profile.py --root build-src
       - name: Normalize reconstructed compiler warnings
         run: python ci/normalize_reconstructed_warnings.py --root build-src
+      - name: Normalize packaging warnings
+        run: python ci/normalize_packaging_warnings.py --root build-src
       - name: Build Windows package
         if: runner.os == 'Windows'
         working-directory: build-src
         shell: pwsh
+        env:
+          PYTHONWARNINGS: 'ignore:invalid escape sequence:SyntaxWarning'
         run: |
           python -m venv .venv312
           .\.venv312\Scripts\python -m pip install --upgrade pip
@@ -189,6 +210,7 @@ jobs:
         working-directory: build-src
         env:
           PYTHON: python3
+          PYTHONWARNINGS: 'ignore:invalid escape sequence:SyntaxWarning'
           PACKIZARD_TARGET_ARCH: ${{ matrix.arch }}
         run: ./build_linux.sh
       - name: Build macOS package
@@ -196,6 +218,7 @@ jobs:
         working-directory: build-src
         env:
           PYTHON: python3
+          PYTHONWARNINGS: 'ignore:invalid escape sequence:SyntaxWarning'
           PACKIZARD_TARGET_ARCH: ${{ matrix.arch }}
         run: ./build_macos.sh
       - name: Upload Windows package

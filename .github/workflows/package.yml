@@ -72,6 +72,8 @@ jobs:
         run: python ci/bootstrap_source.py --output build-src
       - name: Apply Packizard-native NAPS engine
         run: python ci/naps_u2c_partial_group_profile.py --root build-src
+      - name: Normalize reconstructed compiler warnings
+        run: python ci/normalize_reconstructed_warnings.py --root build-src
       - name: Build and probe integrated PKG engine
         working-directory: build-src
         run: |
@@ -170,6 +172,8 @@ jobs:
         run: python ci/bootstrap_source.py --output build-src
       - name: Apply Packizard-native NAPS engine
         run: python ci/naps_u2c_partial_group_profile.py --root build-src
+      - name: Normalize reconstructed compiler warnings
+        run: python ci/normalize_reconstructed_warnings.py --root build-src
       - name: Build Windows package
         if: runner.os == 'Windows'
         working-directory: build-src

@@ -49,7 +49,7 @@ def patch_linux_script(root: Path) -> None:
     cleanup = 'rm -rf -- "$appdir/usr/share/metainfo"'
     metadata = '''rm -rf -- "$appdir/usr/share/metainfo"
 mkdir -p -- "$appdir/usr/share/metainfo"
-cat > "$appdir/usr/share/metainfo/io.github.z3r3lkio.packizard-builder.metainfo.xml" << EOF
+cat > "$appdir/usr/share/metainfo/packizard-builder.appdata.xml" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
   <id>io.github.z3r3lkio.packizard-builder</id>

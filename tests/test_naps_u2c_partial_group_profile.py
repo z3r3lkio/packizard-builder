@@ -1,55 +1,85 @@
-import importlib.util
-import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROFILE = ROOT / "ci" / "naps_u2c_partial_group_profile.py"
-TARGET = Path("vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/ProsperoNapsLayoutBuilder.cs")
+PROFILE = ROOT / "ci" / "packizard_native_naps_profile.py"
+DATA = ROOT / "ci" / "native_naps" / "PackizardNativeDataStream.cs"
+NAPS = ROOT / "ci" / "native_naps" / "PackizardNativeNapsEngine.cs"
+WRITER = ROOT / "ci" / "native_naps" / "PackizardNativeNapsWriter.cs"
+READER = ROOT / "ci" / "native_naps" / "PackizardNativeNapsReader.cs"
+VALIDATOR = ROOT / "ci" / "native_naps" / "PackizardNativeNapsValidator.cs"
+SHIM = ROOT / "ci" / "naps_u2c_partial_group_profile.py"
 
 
-def load_profile():
-    spec = importlib.util.spec_from_file_location("naps_u2c_partial_group_profile", PROFILE)
-    module = importlib.util.module_from_spec(spec)
-    assert spec is not None and spec.loader is not None
-    spec.loader.exec_module(module)
-    # These tests exercise only the terminal-group transform. The structural per-block
-    # profile has its own tests and is exercised end-to-end by StreamingRegression.
-    module._load_data_block_profile = lambda: SimpleNamespace(apply=lambda root: None)
-    return module
+class PackizardNativeNapsSourceTests(unittest.TestCase):
+    def test_legacy_entry_point_is_only_a_native_delegate(self):
+        text = SHIM.read_text(encoding="utf-8")
+        self.assertIn("import packizard_native_naps_profile as native", text)
+        self.assertIn("native.apply(root)", text)
+        self.assertIn("PackizardNativeNapsReader.cs", text)
+        self.assertNotIn("_fix_file_local_data_geometry", text)
+        self.assertNotIn("numCblockInfo - 1", text)
 
+    def test_native_data_stream_coalesces_ordinary_file_boundaries(self):
+        text = DATA.read_text(encoding="utf-8")
+        self.assertIn("var pending = new byte[UBlockSize]", text)
+        self.assertIn("pendingLastFile != fileIndex", text)
+        self.assertIn("pendingCrossesBoundary = true", text)
+        self.assertIn("ContainsFileBoundary", text)
+        self.assertIn("FirstFileIndex", text)
+        self.assertIn("LastFileIndex", text)
+        self.assertIn("if (source.ForceRaw)", text)
+        self.assertIn("FlushPending();", text)
+        self.assertIn("WholeBlockRaw", text)
+        self.assertNotIn("BlockIndexInFile", text)
+        self.assertNotIn("FileStart", text)
 
-class NapsU2cPartialGroupProfileTests(unittest.TestCase):
-    def test_unused_terminal_slots_are_zero_filled(self):
-        profile = load_profile()
-        legacy = '''class Fixture\n{\n        int Delta(int ublock, int baseIndex)\n        {\n            if (ublock < numUBlocks) return first[ublock] - baseIndex;\n            return (numCblockInfo - 1) - baseIndex;             // beyond last ublock -> terminator\n        }\n}\n'''
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            target = root / TARGET
-            target.parent.mkdir(parents=True)
-            target.write_text(legacy, encoding="utf-8")
-            profile.apply(root)
-            patched = target.read_text(encoding="utf-8")
+    def test_native_naps_uses_interval_mapping_and_budget_guards(self):
+        text = NAPS.read_text(encoding="utf-8")
+        self.assertIn("PackizardNapsBudgetReport", text)
+        self.assertIn("span={bad.Span}", text)
+        self.assertIn("BaseRegion", text)
+        self.assertIn("0xFFFFFF", text)
+        self.assertIn("0xFFFFFFFFFFL", text)
+        self.assertIn("LogicalEnd", text)
+        self.assertIn("std[p].LogicalStart > target || target >= std[p].LogicalEnd", text)
+        self.assertIn("metadata overlaps DATA", text)
+        self.assertIn("This is a topology failure", text)
+        self.assertIn("PackizardNativeNapsWriter.Serialize(doc)", text)
+        self.assertNotIn("ProsperoNapsLayoutBuilder.Build", text)
+        self.assertNotIn("ProsperoNwonlyNapsGenerator.Generate", text)
+        self.assertNotIn("ProsperoNapsLayout.BuildLayout(", text)
+        self.assertNotIn("% 256", text)
 
-        self.assertIn("if (ublock >= numUBlocks) return 0;", patched)
-        self.assertIn("for real U-block", patched)
-        self.assertNotIn("beyond last ublock -> terminator", patched)
+    def test_packizard_owns_binary_writer_reader_and_validator(self):
+        writer = WRITER.read_text(encoding="utf-8")
+        reader = READER.read_text(encoding="utf-8")
+        validator = VALIDATOR.read_text(encoding="utf-8")
+        self.assertIn("PackizardNativeNapsValidator.ValidateDocument(document)", writer)
+        self.assertIn("WriteHeader", writer)
+        self.assertIn("WriteU2c", writer)
+        self.assertIn("WriteCblock", writer)
+        self.assertNotIn("ProsperoNapsLayout.BuildLayout(", writer)
+        self.assertIn("counts.NumFiles + 1", reader)
+        self.assertIn("ReadU2c", reader)
+        self.assertIn("ReadCblock", reader)
+        self.assertIn("0xFFFFFF", validator)
+        self.assertIn("0xFFFFFFFFFFUL", validator)
+        self.assertIn("0x7FFFFF", validator)
+        self.assertIn("u2c", validator)
 
-    def test_profile_is_idempotent(self):
-        profile = load_profile()
-        legacy = '''class Fixture\n{\n        int Delta(int ublock, int baseIndex)\n        {\n            if (ublock < numUBlocks) return first[ublock] - baseIndex;\n            return (numCblockInfo - 1) - baseIndex;             // beyond last ublock -> terminator\n        }\n}\n'''
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            target = root / TARGET
-            target.parent.mkdir(parents=True)
-            target.write_text(legacy, encoding="utf-8")
-            profile.apply(root)
-            once = target.read_text(encoding="utf-8")
-            profile.apply(root)
-            twice = target.read_text(encoding="utf-8")
-        self.assertEqual(once, twice)
+    def test_profile_bypasses_legacy_naps_generator_and_uses_logical_mount_geometry(self):
+        text = PROFILE.read_text(encoding="utf-8")
+        self.assertIn("PackizardNativeNapsEngine.Generate", text)
+        self.assertIn("DataBlocks = dataStream.Blocks", text)
+        self.assertIn("PackizardNativeDataStream.Build", text)
+        self.assertIn("RoundUp(dataStream.LogicalLength, BlockSize)", text)
+        self.assertIn("WholeBlockRaw = f.WholeBlockRaw", text)
+        self.assertIn("inner.DataEndLogical", text)
+        self.assertIn("BuildNativeImage", text)
+        self.assertIn("PackizardNativeNapsWriter.cs", text)
+        self.assertIn("PackizardNativeNapsValidator.cs", text)
 
 
 if __name__ == "__main__":

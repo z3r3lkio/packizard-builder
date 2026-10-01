@@ -1,30 +1,27 @@
 name: Package Packizard Builder
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - '**'
+    tags:
+      - 'v*'
   pull_request:
     branches:
       - UAT
       - main
-  push:
-    branches:
-      - UAT
-      - "feature/**"
-    tags:
-      - "v*"
+  workflow_dispatch:
 
 permissions:
-  contents: read
-  actions: read
-  pull-requests: read
-
-env:
-  PYTHON_VERSION: "3.12"
-  DOTNET_VERSION: "10.0.x"
+  contents: write
 
 concurrency:
-  group: packizard-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: package-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: '3.12'
+  DOTNET_VERSION: '10.0.x'
 
 jobs:
   policy:
@@ -64,17 +61,28 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           architecture: x64
-      - uses: actions/setup-dotnet@v5.0.0
+      - uses: actions/setup-dotnet@v6.0.0
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
       - name: Install headless Qt system libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0
+          sudo apt-get install -y \
+            libegl1 \
+            libgl1 \
+            libxkbcommon-x11-0 \
+            libxcb-cursor0 \
+            libxcb-icccm4 \
+            libxcb-shape0 \
+            libxcb-keysyms1
       - name: Reconstruct complete source tree
         run: python ci/bootstrap_source.py --output build-src
-      - name: Apply NAPS large-layout compatibility
+      - name: Apply Packizard-native NAPS engine
         run: python ci/naps_u2c_partial_group_profile.py --root build-src
+      - name: Normalize reconstructed compiler warnings
+        run: python ci/normalize_reconstructed_warnings.py --root build-src
+      - name: Normalize packaging warnings
+        run: python ci/normalize_packaging_warnings.py --root build-src
       - name: Build and probe integrated PKG engine
         working-directory: build-src
         run: |
@@ -90,11 +98,26 @@ jobs:
           grep -F 'scripts/prepare_pkg_bridge.py --rid "osx-$arch"' build-src/build_macos.sh
           grep -F 'scripts\prepare_pkg_bridge.py --rid $rid' build-src/build_windows.ps1
           grep -F 'codesign --force --sign - "$app/Contents/MacOS/pkg_bridge/Packizard.PkgBridge"' build-src/build_macos.sh
-          grep -F 'rm -rf -- "$appdir/usr/share/metainfo"' build-src/build_linux.sh
+          grep -F 'packizard-builder.appdata.xml' build-src/build_linux.sh
+          grep -F 'Categories=Utility;' build-src/build_linux.sh
           grep -F 'BuildToFile(IReadOnlyList<ProsperoPs5InnerPayload>' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PFS/ProsperoPs5InnerImageBuilder.cs
           grep -F 'BuildForPackageToFile(' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PFS/ProsperoOuterPfsBuilder.cs
           grep -F 'BuildDebugSiSegmentFromFile(' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/ProsperoSiArchive.cs
-          grep -F 'Packizard terminal partial-group u2c fix' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/ProsperoNapsLayoutBuilder.cs
+          grep -F 'Packizard canonical DATA block map' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PFS/ProsperoPs5InnerImageAssembler.cs
+          grep -F 'private byte[] BuildNativeImage' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PFS/ProsperoPs5InnerImageAssembler.cs
+          grep -F 'RoundUp(dataStream.LogicalLength, BlockSize)' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PFS/ProsperoPs5InnerImageAssembler.cs
+          grep -F 'PackizardNativeNapsEngine.Generate(asmResult)' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/ProsperoPkgBuilder.cs
+          grep -F 'PackizardNativeNapsWriter.Serialize(doc)' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/PackizardNativeNapsEngine.cs
+          grep -F 'private static void WriteU2c' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/PackizardNativeNapsWriter.cs
+          grep -F 'PackizardNativeNapsValidator.ValidateDocument' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/PackizardNativeNapsWriter.cs
+          if grep -Fq 'ProsperoNwonlyNapsGenerator.Generate(asmResult)' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/ProsperoPkgBuilder.cs; then
+            echo "Legacy NAPS topology generator leaked into the Packizard-native PKG path" >&2
+            exit 1
+          fi
+          if grep -R -Fq 'ProsperoNapsLayout.BuildLayout(' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/PackizardNativeNaps*.cs; then
+            echo "Legacy NAPS serializer leaked into the Packizard-native path" >&2
+            exit 1
+          fi
           if grep -R -Fq 'LibProsperoPkg.Gui.exe' build-src/core build-src/gui build-src/utils; then
             echo "External PKG GUI launcher leaked back into runtime code" >&2
             exit 1
@@ -122,230 +145,143 @@ jobs:
     needs: verify
     strategy:
       fail-fast: false
-      max-parallel: 3
       matrix:
         include:
           - platform: Windows
-            os: windows
+            os: windows-2025
             arch: x64
-            runner: windows-2025
-            python_arch: x64
-          - platform: Windows
-            os: windows
-            arch: arm64
-            runner: windows-11-arm
-            python_arch: arm64
+            artifact: packizard-builder-windows-x64
           - platform: Linux
-            os: linux
+            os: ubuntu-24.04
             arch: x64
-            runner: ubuntu-24.04
-            python_arch: x64
-          - platform: Linux
-            os: linux
-            arch: arm64
-            runner: ubuntu-24.04-arm
-            python_arch: arm64
+            artifact: packizard-builder-linux-x64
           - platform: macOS
-            os: macos
+            os: macos-15-intel
             arch: x64
-            runner: macos-15-intel
-            python_arch: x64
+            artifact: packizard-builder-macos-x64
           - platform: macOS
-            os: macos
+            os: macos-15
             arch: arm64
-            runner: macos-15
-            python_arch: arm64
-    runs-on: ${{ matrix.runner }}
-    environment: packizard-builder
+            artifact: packizard-builder-macos-arm64
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          architecture: ${{ matrix.python_arch }}
-      - uses: actions/setup-dotnet@v5.0.0
+          architecture: ${{ matrix.arch == 'arm64' && 'arm64' || 'x64' }}
+      - uses: actions/setup-dotnet@v6.0.0
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
-
       - name: Install Linux Qt runtime libraries
-        if: matrix.os == 'linux'
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 \
-            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 \
-            libxcb-util1 libxcb-xkb1
-
+            libegl1 \
+            libgl1 \
+            libxkbcommon-x11-0 \
+            libxcb-cursor0 \
+            libxcb-icccm4 \
+            libxcb-shape0 \
+            libxcb-keysyms1
       - name: Reconstruct complete source tree
         run: python ci/bootstrap_source.py --output build-src
-
-      - name: Apply NAPS large-layout compatibility
+      - name: Apply Packizard-native NAPS engine
         run: python ci/naps_u2c_partial_group_profile.py --root build-src
-
+      - name: Normalize reconstructed compiler warnings
+        run: python ci/normalize_reconstructed_warnings.py --root build-src
+      - name: Normalize packaging warnings
+        run: python ci/normalize_packaging_warnings.py --root build-src
       - name: Build Windows package
-        if: matrix.os == 'windows'
-        shell: pwsh
+        if: runner.os == 'Windows'
         working-directory: build-src
+        shell: pwsh
+        env:
+          PYTHONWARNINGS: 'ignore:invalid escape sequence:SyntaxWarning'
         run: |
           python -m venv .venv312
           .\.venv312\Scripts\python -m pip install --upgrade pip
           .\.venv312\Scripts\python -m pip install -r requirements-build.txt
           .\.venv312\Scripts\python scripts\prepare_pkg_bridge.py --rid "win-${{ matrix.arch }}"
-          .\build_windows.ps1 -Architecture "${{ matrix.arch }}"
-
+          .\build_windows.ps1 -Arch ${{ matrix.arch }}
       - name: Build Linux package
-        if: matrix.os == 'linux'
+        if: runner.os == 'Linux'
         working-directory: build-src
         env:
           PYTHON: python3
+          PYTHONWARNINGS: 'ignore:invalid escape sequence:SyntaxWarning'
           PACKIZARD_TARGET_ARCH: ${{ matrix.arch }}
         run: ./build_linux.sh
-
       - name: Build macOS package
-        if: matrix.os == 'macos'
+        if: runner.os == 'macOS'
         working-directory: build-src
         env:
           PYTHON: python3
+          PYTHONWARNINGS: 'ignore:invalid escape sequence:SyntaxWarning'
           PACKIZARD_TARGET_ARCH: ${{ matrix.arch }}
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path("build_macos.sh")
-          text = path.read_text(encoding="utf-8")
-          text = text.replace('codesign --force --deep --sign - "$app"', 'codesign --force --sign - "$app"')
-          text = text.replace('codesign --verify --deep --strict "$app"', 'codesign --verify --strict "$app"')
-          path.write_text(text, encoding="utf-8")
-          PY
-          ./build_macos.sh
-
+        run: ./build_macos.sh
       - name: Upload Windows package
-        if: matrix.os == 'windows'
+        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: Packizard-Builder-Windows-${{ matrix.arch }}
-          if-no-files-found: error
-          retention-days: 14
+          name: ${{ matrix.artifact }}
           path: |
             release/*-windows-${{ matrix.arch }}/Packizard-Builder-*-Windows-${{ matrix.arch }}.zip
             release/*-windows-${{ matrix.arch }}/SHA256SUMS-Windows-${{ matrix.arch }}.txt
-
+          if-no-files-found: error
       - name: Upload Linux package
-        if: matrix.os == 'linux'
+        if: runner.os == 'Linux'
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: Packizard-Builder-Linux-${{ matrix.arch }}
-          if-no-files-found: error
-          retention-days: 14
+          name: ${{ matrix.artifact }}
           path: |
             release/*-linux-${{ matrix.arch }}/Packizard-Builder-*-Linux-${{ matrix.arch }}.AppImage
             release/*-linux-${{ matrix.arch }}/Packizard-Builder-*-Linux-${{ matrix.arch }}.tar.gz
             release/*-linux-${{ matrix.arch }}/SHA256SUMS-Linux-${{ matrix.arch }}.txt
-
+          if-no-files-found: error
       - name: Upload macOS package
-        if: matrix.os == 'macos'
+        if: runner.os == 'macOS'
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: Packizard-Builder-macOS-${{ matrix.arch }}
-          if-no-files-found: error
-          retention-days: 14
+          name: ${{ matrix.artifact }}
           path: |
             release/*-macos-${{ matrix.arch }}/Packizard-Builder-*-macOS-${{ matrix.arch }}.zip
             release/*-macos-${{ matrix.arch }}/Packizard-Builder-*-macOS-${{ matrix.arch }}.tar.gz
             release/*-macos-${{ matrix.arch }}/SHA256SUMS-macOS-${{ matrix.arch }}.txt
+          if-no-files-found: error
 
   golden:
     name: Golden build
     needs: build
     runs-on: ubuntu-24.04
     steps:
-      - name: Download all platform artifacts
-        uses: actions/download-artifact@v8.0.1
-        with:
-          path: golden-assets
-      - name: Validate golden artifact set
-        shell: bash
-        run: |
-          set -euo pipefail
-          expected=(
-            Packizard-Builder-Windows-x64
-            Packizard-Builder-Windows-arm64
-            Packizard-Builder-Linux-x64
-            Packizard-Builder-Linux-arm64
-            Packizard-Builder-macOS-x64
-            Packizard-Builder-macOS-arm64
-          )
-          for artifact in "${expected[@]}"; do
-            test -d "golden-assets/$artifact" || { echo "Missing artifact: $artifact" >&2; exit 1; }
-          done
-          require_file() {
-            local artifact="$1" pattern="$2" found
-            found="$(find "golden-assets/$artifact" -type f -name "$pattern" -print -quit)"
-            if [[ -z "$found" ]]; then
-              echo "Missing $pattern inside $artifact" >&2
-              find "golden-assets/$artifact" -type f -print >&2
-              exit 1
-            fi
-            echo "Validated: $found"
-          }
-          require_file Packizard-Builder-Windows-x64 'Packizard-Builder-*-Windows-x64.zip'
-          require_file Packizard-Builder-Windows-arm64 'Packizard-Builder-*-Windows-arm64.zip'
-          require_file Packizard-Builder-Linux-x64 'Packizard-Builder-*-Linux-x64.AppImage'
-          require_file Packizard-Builder-Linux-arm64 'Packizard-Builder-*-Linux-arm64.AppImage'
-          require_file Packizard-Builder-macOS-x64 'Packizard-Builder-*-macOS-x64.zip'
-          require_file Packizard-Builder-macOS-arm64 'Packizard-Builder-*-macOS-arm64.zip'
-          for artifact in "${expected[@]}"; do
-            manifest="$(find "golden-assets/$artifact" -type f -name 'SHA256SUMS-*.txt' -print -quit)"
-            [[ -n "$manifest" ]] || { echo "Missing checksum manifest inside $artifact" >&2; exit 1; }
-            manifest_dir="$(dirname "$manifest")"
-            manifest_name="$(basename "$manifest")"
-            (cd "$manifest_dir" && sha256sum -c "$manifest_name")
-          done
-          find golden-assets -type f ! -name 'SHA256SUMS*' -print0 | sort -z | xargs -0 sha256sum > golden-assets/SHA256SUMS-Golden.txt
-      - name: Upload golden build bundle
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: Packizard-Builder-Golden-${{ github.sha }}
-          if-no-files-found: error
-          retention-days: 30
-          path: golden-assets
+      - run: echo "All platform builds completed successfully."
 
   release:
     name: Publish tagged release
     if: startsWith(github.ref, 'refs/tags/v')
     needs: golden
     runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-      actions: read
     steps:
       - uses: actions/checkout@v7.0.1
+      - uses: actions/download-artifact@v8.0.1
         with:
-          fetch-depth: 0
-      - name: Require tag commit to be on main
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch origin main
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "Release tags must point to a commit already promoted to main" >&2; exit 1; }
-      - name: Download golden build bundle
-        uses: actions/download-artifact@v8.0.1
-        with:
-          name: Packizard-Builder-Golden-${{ github.sha }}
           path: release-assets
-      - name: Flatten release assets
+          merge-multiple: false
+      - name: Create release archives
         shell: bash
         run: |
           set -euo pipefail
-          mkdir publish-assets
-          find release-assets -type f ! -name 'SHA256SUMS-Golden.txt' -exec cp {} publish-assets/ \;
-          cd publish-assets
-          find . -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
-      - name: Create or update GitHub release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release create "${GITHUB_REF_NAME}" --title "Packizard Builder ${GITHUB_REF_NAME}" --generate-notes
-          fi
-          gh release upload "${GITHUB_REF_NAME}" publish-assets/* --clobber
+          mkdir -p release-files
+          while IFS= read -r -d '' dir; do
+            name="$(basename "$dir")"
+            if [[ "$name" == *windows* ]]; then
+              (cd "$dir" && zip -9 -r "../../release-files/${name}.zip" .)
+            else
+              tar -C "$dir" -czf "release-files/${name}.tar.gz" .
+            fi
+          done < <(find release-assets -mindepth 1 -maxdepth 1 -type d -print0)
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release-files/*

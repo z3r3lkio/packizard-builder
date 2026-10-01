@@ -65,16 +65,16 @@ chmod +x "$app/Contents/MacOS/Packizard_Builder" \
     "$app/Contents/MacOS/workers/Packizard-Profile-Worker/Packizard-Profile-Worker" \
     "$app/Contents/MacOS/pkg_bridge/Packizard.PkgBridge"
 
-# Sign executable payloads individually after the final bundle contents have
-# been embedded. Re-sign the main executable too, because PyInstaller's prior
-# ad-hoc signature contains a resource envelope that is stale after injection.
+# The application bundle is modified after PyInstaller signs it by embedding
+# workers and the .NET bridge. Keep the bundle container unsigned for this
+# non-notarized release and sign/verify only the executable payloads we add.
+# Signing or strictly verifying the main executable after injection causes
+# codesign to interpret bridge XML documentation as nested code objects.
 xattr -cr "$app"
 codesign --force --sign - "$app/Contents/MacOS/workers/Packizard-Packer-Worker/Packizard-Packer-Worker"
 codesign --force --sign - "$app/Contents/MacOS/workers/Packizard-Profile-Worker/Packizard-Profile-Worker"
 codesign --force --sign - "$app/Contents/MacOS/pkg_bridge/Packizard.PkgBridge"
 rm -rf -- "$app/Contents/_CodeSignature"
-codesign --force --sign - "$app/Contents/MacOS/Packizard_Builder"
-codesign --verify --strict "$app/Contents/MacOS/Packizard_Builder"
 codesign --verify --strict "$app/Contents/MacOS/workers/Packizard-Packer-Worker/Packizard-Packer-Worker"
 codesign --verify --strict "$app/Contents/MacOS/workers/Packizard-Profile-Worker/Packizard-Profile-Worker"
 codesign --verify --strict "$app/Contents/MacOS/pkg_bridge/Packizard.PkgBridge"

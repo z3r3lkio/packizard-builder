@@ -138,7 +138,8 @@ jobs:
         shell: pwsh
         run: |
           Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $archive = Get-ChildItem -Path ..\release -Recurse -Filter 'Packizard-Builder-*-Windows-*.zip' | Select-Object -First 1
+          $releaseRoot = Join-Path (Split-Path -Parent $env:GITHUB_WORKSPACE) 'release'
+          $archive = Get-ChildItem -Path $releaseRoot -Recurse -Filter 'Packizard-Builder-*-Windows-*.zip' | Select-Object -First 1
           if (-not $archive) { throw 'Windows release ZIP not found' }
           $zip = [System.IO.Compression.ZipFile]::OpenRead($archive.FullName)
           try {
@@ -148,34 +149,48 @@ jobs:
             }
           }
           finally { $zip.Dispose() }
-      - name: Upload Windows package
+      - name: Stage Windows release artifacts
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: ${{ matrix.artifact }}
-          path: |
-            ../release/*-windows-${{ matrix.arch }}/Packizard-Builder-*-Windows-${{ matrix.arch }}.zip
-            ../release/*-windows-${{ matrix.arch }}/SHA256SUMS-Windows-${{ matrix.arch }}.txt
-          if-no-files-found: error
-      - name: Upload Linux package
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:GITHUB_WORKSPACE 'release-artifacts'
+          $releaseRoot = Join-Path (Split-Path -Parent $env:GITHUB_WORKSPACE) 'release'
+          Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          $archive = Get-ChildItem -Path $releaseRoot -Recurse -Filter 'Packizard-Builder-*-Windows-${{ matrix.arch }}.zip' | Select-Object -First 1
+          $checksum = Get-ChildItem -Path $releaseRoot -Recurse -Filter 'SHA256SUMS-Windows-${{ matrix.arch }}.txt' | Select-Object -First 1
+          if (-not $archive -or -not $checksum) { throw 'Windows release artifacts are incomplete' }
+          Copy-Item -LiteralPath $archive.FullName -Destination $stage
+          Copy-Item -LiteralPath $checksum.FullName -Destination $stage
+      - name: Stage Linux release artifacts
         if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: ${{ matrix.artifact }}
-          path: |
-            ../release/*-linux-${{ matrix.arch }}/Packizard-Builder-*-Linux-${{ matrix.arch }}.AppImage
-            ../release/*-linux-${{ matrix.arch }}/Packizard-Builder-*-Linux-${{ matrix.arch }}.tar.gz
-            ../release/*-linux-${{ matrix.arch }}/SHA256SUMS-Linux-${{ matrix.arch }}.txt
-          if-no-files-found: error
-      - name: Upload macOS package
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="$GITHUB_WORKSPACE/release-artifacts"
+          release_root="$(dirname "$GITHUB_WORKSPACE")/release"
+          rm -rf -- "$stage"
+          mkdir -p -- "$stage"
+          cp -- "$release_root"/*-linux-${{ matrix.arch }}/Packizard-Builder-*-Linux-${{ matrix.arch }}.AppImage "$stage/"
+          cp -- "$release_root"/*-linux-${{ matrix.arch }}/Packizard-Builder-*-Linux-${{ matrix.arch }}.tar.gz "$stage/"
+          cp -- "$release_root"/*-linux-${{ matrix.arch }}/SHA256SUMS-Linux-${{ matrix.arch }}.txt "$stage/"
+      - name: Stage macOS release artifacts
         if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="$GITHUB_WORKSPACE/release-artifacts"
+          release_root="$(dirname "$GITHUB_WORKSPACE")/release"
+          rm -rf -- "$stage"
+          mkdir -p -- "$stage"
+          cp -- "$release_root"/*-macos-${{ matrix.arch }}/Packizard-Builder-*-macOS-${{ matrix.arch }}.zip "$stage/"
+          cp -- "$release_root"/*-macos-${{ matrix.arch }}/Packizard-Builder-*-macOS-${{ matrix.arch }}.tar.gz "$stage/"
+          cp -- "$release_root"/*-macos-${{ matrix.arch }}/SHA256SUMS-macOS-${{ matrix.arch }}.txt "$stage/"
+      - name: Upload release package
         uses: actions/upload-artifact@v7.0.1
         with:
           name: ${{ matrix.artifact }}
-          path: |
-            ../release/*-macos-${{ matrix.arch }}/Packizard-Builder-*-macOS-${{ matrix.arch }}.zip
-            ../release/*-macos-${{ matrix.arch }}/Packizard-Builder-*-macOS-${{ matrix.arch }}.tar.gz
-            ../release/*-macos-${{ matrix.arch }}/SHA256SUMS-macOS-${{ matrix.arch }}.txt
+          path: release-artifacts/*
           if-no-files-found: error
 
   golden:

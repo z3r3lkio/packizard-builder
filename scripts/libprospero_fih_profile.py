@@ -5,6 +5,7 @@ from pathlib import Path
 FIH_BUILDER_RELATIVE = Path("src/LibProsperoPkg/PKG/ProsperoFihBuilder.cs")
 PKG_BUILDER_RELATIVE = Path("src/LibProsperoPkg/PKG/ProsperoPkgBuilder.cs")
 OUTER_PFS_BUILDER_RELATIVE = Path("src/LibProsperoPkg/PFS/ProsperoOuterPfsBuilder.cs")
+INNER_ASSEMBLER_RELATIVE = Path("src/LibProsperoPkg/PFS/ProsperoPs5InnerImageAssembler.cs")
 
 _FIH_ORIGINAL = """                uint metaOrInodes = nwonly ? (uint)nwonlyInnerContentInodes : (uint)(totalBlocks - innerBlocks);\n                BinaryPrimitives.WriteUInt32LittleEndian(h.AsSpan(ProsperoPkgLayout.FihInnerImageBlockCountField), innerBlocks);\n                BinaryPrimitives.WriteUInt32LittleEndian(h.AsSpan(ProsperoPkgLayout.FihMetaBlockCountField), metaOrInodes);\n                BinaryPrimitives.WriteUInt32LittleEndian(h.AsSpan(ProsperoPkgLayout.FihMetaBlockCountMirrorField), metaOrInodes);\n"""
 
@@ -25,6 +26,14 @@ _OUTER_ENCRYPT_PATCHED = """        // Known-good FullDebug FIH references keep 
 _OUTER_STREAM_ENCRYPT_ORIGINAL = """                xts.CryptSector(block, sector, encrypt: true);\n                fs.Position = checked((long)i * BlockSize);\n                fs.Write(block, 0, block.Length);\n"""
 
 _OUTER_STREAM_ENCRYPT_PATCHED = """                // FullDebug references store the finalized outer-PFS block bytes as built.\n                // The streaming path must match the in-memory path and must not AES-XTS transform them.\n                fs.Position = checked((long)i * BlockSize);\n                fs.Write(block, 0, block.Length);\n"""
+
+# NAPS assigns owner flag 0 to AFID 0 and explicitly documents AFID 0 as the DRM keystone.
+# The pinned assembler currently sorts the entire sce_sys subtree, which lets files such as
+# appinfo/version metadata precede /sce_sys/keystone. Known-good references begin the data-first
+# image with keystone, so force that single invariant and preserve the relative order of everything else.
+_INNER_AFID_ORIGINAL = """        var afidOrder = new List<FileNode>();\n        Dir? sceSys = uroot.SubDirs.FirstOrDefault(d => d.Name == SceSysDir);\n        if (sceSys != null) CollectFilesPreOrder(sceSys, afidOrder);\n        foreach (var d in dirsPreOrder)\n"""
+
+_INNER_AFID_PATCHED = """        var afidOrder = new List<FileNode>();\n        Dir? sceSys = uroot.SubDirs.FirstOrDefault(d => d.Name == SceSysDir);\n        if (sceSys != null)\n        {\n            var sceSysFiles = new List<FileNode>();\n            CollectFilesPreOrder(sceSys, sceSysFiles);\n            FileNode? keystone = sceSysFiles.FirstOrDefault(f => IsKeystone(f.FullPath));\n            if (keystone is not null)\n                afidOrder.Add(keystone);\n            foreach (var f in sceSysFiles)\n                if (!ReferenceEquals(f, keystone))\n                    afidOrder.Add(f);\n        }\n        foreach (var d in dirsPreOrder)\n"""
 
 
 def _patch_exact(path: Path, original: str, patched: str, label: str) -> bool:
@@ -63,8 +72,24 @@ def _patch_streaming_outer_if_present(path: Path) -> bool:
     return True
 
 
+def _patch_inner_afid_if_present(path: Path) -> bool:
+    """Keep the nwonly DRM keystone at AFID 0 when the inner assembler is present."""
+    if not path.is_file():
+        return False
+    text = path.read_text(encoding="utf-8")
+    if _INNER_AFID_PATCHED in text:
+        return False
+    if _INNER_AFID_ORIGINAL not in text:
+        raise RuntimeError(
+            "Pinned LibProsperoPKG inner-image AFID ordering no longer matches the Packizard "
+            "reference profile preimage; review the assembler before updating the pin."
+        )
+    path.write_text(text.replace(_INNER_AFID_ORIGINAL, _INNER_AFID_PATCHED, 1), encoding="utf-8")
+    return True
+
+
 def apply_fih_reference_profile(vendor_dir: str | Path) -> bool:
-    """Apply Packizard's reference-backed FIH/CNT/outer-PFS image-validation profile.
+    """Apply Packizard's reference-backed FIH/CNT/outer-PFS/inner-image profile.
 
     Returns True when any pinned source file was changed and False when the
     complete profile was already applied. Every mandatory rewrite uses an exact preimage
@@ -93,4 +118,5 @@ def apply_fih_reference_profile(vendor_dir: str | Path) -> bool:
         "outer PFS package builder",
     )
     changed |= _patch_streaming_outer_if_present(outer_builder)
+    changed |= _patch_inner_afid_if_present(vendor / INNER_ASSEMBLER_RELATIVE)
     return changed

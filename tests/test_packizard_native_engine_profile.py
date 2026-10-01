@@ -1,0 +1,84 @@
+from __future__ import annotations
+
+import importlib.util
+import tempfile
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def load_module(path: Path, name: str):
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+native_profile = load_module(ROOT / "ci" / "packizard_native_engine.py", "packizard_native_engine_test")
+single_profile = load_module(ROOT / "ci" / "single_executable_profile.py", "single_executable_profile_test")
+
+
+class NativeEngineProfileTests(unittest.TestCase):
+    def test_ui_rebranding_removes_legacy_product_name(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "gui").mkdir()
+            (root / "core").mkdir()
+            (root / "main.py").write_text('TITLE = "Lazy_AMPR - AMPR/LZ4 compression"\n', encoding="utf-8")
+            (root / "gui" / "page.py").write_text('LABEL = "LZ4 Compression"\n', encoding="utf-8")
+            changed = native_profile.patch_product_ui(root)
+            self.assertEqual(len(changed), 2)
+            native_profile.assert_product_references_are_clean(root)
+            self.assertIn("Packizard Builder", (root / "main.py").read_text(encoding="utf-8"))
+            self.assertIn("Packizard Engine", (root / "main.py").read_text(encoding="utf-8"))
+            self.assertIn("Packizard Compression", (root / "gui" / "page.py").read_text(encoding="utf-8"))
+
+    def test_product_reference_guard_rejects_legacy_name(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "core").mkdir()
+            (root / "main.py").write_text('TITLE = "Lazy_AMPR"\n', encoding="utf-8")
+            with self.assertRaises(RuntimeError):
+                native_profile.assert_product_references_are_clean(root)
+
+    def test_single_executable_profile_generates_onefile_windows_build(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "core").mkdir()
+            (root / "utils").mkdir()
+            (root / "gui").mkdir()
+            (root / "ampr_pack.spec").write_text(
+                'exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="ampr_pack", console=True)\n'
+                'coll = COLLECT(exe, a.binaries, a.datas, name="ampr_pack")\n',
+                encoding="utf-8",
+            )
+            (root / "ampr_pack_profile.spec").write_text(
+                'exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="ampr_pack_profile", console=True)\n'
+                'coll = COLLECT(exe, a.binaries, a.datas, name="ampr_pack_profile")\n',
+                encoding="utf-8",
+            )
+            (root / "utils" / "tool_runner.py").write_text(
+                'ROOT = Path(sys.executable).resolve().parent\n', encoding="utf-8"
+            )
+
+            single_profile.apply(root)
+
+            main_spec = (root / "Packizard_Builder_OneFile.spec").read_text(encoding="utf-8")
+            windows_build = (root / "build_windows.ps1").read_text(encoding="utf-8")
+            worker_spec = (root / "ampr_pack.spec").read_text(encoding="utf-8")
+            runner = (root / "utils" / "tool_runner.py").read_text(encoding="utf-8")
+
+            self.assertIn('name="Packizard-Builder"', main_spec)
+            self.assertNotIn("COLLECT(", main_spec)
+            self.assertIn("Packizard-Builder.exe", windows_build)
+            self.assertIn("Compress-Archive -LiteralPath $exe", windows_build)
+            self.assertNotIn("coll = COLLECT", worker_spec)
+            self.assertIn("_MEIPASS", runner)
+
+
+if __name__ == "__main__":
+    unittest.main()

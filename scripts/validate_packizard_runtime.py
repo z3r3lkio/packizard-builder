@@ -11,6 +11,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from core.packizard_ps5_runtime import COMPATIBILITY_LIBRARY, SOURCE_ROOT
 
+FSELF_MAGIC = b"\x4f\x15\x3d\x1d"
+
 
 def validate(root: Path) -> None:
     source = root / SOURCE_ROOT
@@ -22,6 +24,12 @@ def validate(root: Path) -> None:
         source / "build_packizard_runtime.sh",
         source / "LICENSE",
         source / "PACKIZARD_RUNTIME.md",
+        source / "tools" / "generate_payload_exports.py",
+        source / "tools" / "prepare_prx_link_script.py",
+        source / "tools" / "stamp_payload_prx.py",
+        source / "tools" / "prx_hash_fix.py",
+        source / "tools" / "make_fself.py",
+        source / "tools" / "verify_payload_prx.py",
     )
     missing = [str(path.relative_to(root)) for path in required if not path.is_file()]
     if missing:
@@ -35,8 +43,8 @@ def validate(root: Path) -> None:
         raise RuntimeError(f"Bundled PS5 runtime is missing: {runtime}")
     if runtime.stat().st_size < 4096:
         raise RuntimeError(f"Bundled PS5 runtime is unexpectedly small: {runtime}")
-    if runtime.read_bytes()[:4] != b"\x7fELF":
-        raise RuntimeError(f"Bundled PS5 runtime is not an ELF module: {runtime}")
+    if runtime.read_bytes()[:4] != FSELF_MAGIC:
+        raise RuntimeError(f"Bundled PS5 runtime is not a valid FSELF container: {runtime}")
 
     if not provenance.is_file():
         raise RuntimeError(f"Runtime source provenance marker is missing: {provenance}")

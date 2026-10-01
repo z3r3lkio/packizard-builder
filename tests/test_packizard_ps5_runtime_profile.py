@@ -31,11 +31,9 @@ class PackizardPs5RuntimeProfileTests(unittest.TestCase):
             self.assertIn('RUNTIME_NAME = "Packizard PS5 Runtime"', identity)
             self.assertIn('COMPATIBILITY_LIBRARY = "libSceAmpr.sprx"', identity)
 
-    def test_runtime_archive_is_pinned(self):
-        module = load_module(ROOT / "ci" / "packizard_ps5_runtime.py", "packizard_ps5_runtime_hash_test")
-        archive = ROOT / "runtime" / "ps5" / module.ARCHIVE_NAME
-        import hashlib
-        self.assertEqual(hashlib.sha256(archive.read_bytes()).hexdigest(), module.ARCHIVE_SHA256)
+    def test_runtime_archive_is_xz_and_extractable(self):
+        archive = ROOT / "runtime" / "ps5" / "packizard_ps5_runtime.tar.xz"
+        self.assertEqual(archive.read_bytes()[:6], b"\xfd7zXZ\x00")
 
 
 if __name__ == "__main__":

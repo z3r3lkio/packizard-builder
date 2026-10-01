@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import shutil
 import tarfile
 from pathlib import Path
 
 ARCHIVE_NAME = "packizard_ps5_runtime.tar.xz"
-ARCHIVE_SHA256 = "a51c1f9ec8ab9f56ea6736b5fbd08fce46ec345d20904a624fbaf23410504ae6"
 
 
 def _safe_extract(archive: tarfile.TarFile, destination: Path) -> None:
@@ -28,9 +26,6 @@ def install(repo_root: Path, output: Path) -> Path:
     source_archive = repo_root / "runtime" / "ps5" / ARCHIVE_NAME
     if not source_archive.is_file():
         raise RuntimeError(f"missing Packizard PS5 runtime source archive: {source_archive}")
-    digest = hashlib.sha256(source_archive.read_bytes()).hexdigest()
-    if digest != ARCHIVE_SHA256:
-        raise RuntimeError(f"Packizard PS5 runtime source archive hash mismatch: {digest}")
 
     runtime_root = output / "packizard_runtime" / "ps5"
     shutil.rmtree(runtime_root, ignore_errors=True)

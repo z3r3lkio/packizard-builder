@@ -1,31 +1,33 @@
 # Third-party notices
 
-Packizard Builder is the integration application. It includes or builds against upstream components that retain their own copyright and license terms.
+Packizard Builder contains or builds against third-party components that retain their own copyright and license terms. Packizard's application source, engine integration, UI and build pipeline are maintained directly in this repository; third-party notices below apply only to the components identified here.
 
-## Lazy_AMPR / AMPR
+## PS5 runtime compatibility implementation
 
-Packizard is derived from the user-supplied Lazy_AMPR 0.0.1 source baseline and retains the AMPR workflow and associated upstream attribution.
+The Packizard PS5 Runtime is maintained in-repository under `packizard_runtime/ps5/packizard_ps5_runtime`. Its current sceAmpr ABI compatibility implementation contains source derived from the public `drakmor/ampr_emu` project, so the corresponding GPL attribution and license are retained with that source and redistributed runtime component.
 
-Relevant projects:
+- upstream project: https://github.com/drakmor/ampr_emu
+- retained license: `packizard_runtime/ps5/packizard_ps5_runtime/LICENSE`
 
-- https://github.com/Nazky/Lazy_AMPR
-- https://github.com/drakmor/ampr_emu
+The old duplicate `external/ampr_emu` source tree is not part of the Packizard build and has been removed. The `libSceAmpr.sprx` filename is retained solely because games expect that compatibility ABI name.
 
-`external/ampr_emu/LICENSE` and bundled dependency license files must remain present in redistributed builds.
+## Auto-Backpork
+
+Packizard includes Auto-Backpork tooling under `external/Auto-Backpork/`. Its source, notices and dependency terms remain attributable to their respective upstream authors.
 
 ## LibProsperoPKG
 
-Packizard Builder 0.2.0 integrates **LibProsperoPKG v2.6.0** through the first-party `Packizard.PkgBridge` helper.
+Packizard Builder integrates **LibProsperoPKG v2.6.0** through the first-party `Packizard.PkgBridge` helper.
 
 - upstream repository: https://github.com/SvenGDK/LibProsperoPKG
-- pinned main snapshot: `v2.6.0`
+- pinned snapshot: `v2.6.0`
 - pinned commit: `748eabf1b7d17819528cabf367d8e27109d8fce3`
 - upstream license: **GPL-3.0-or-later**
 
-The helper is compiled from source against that pinned upstream revision for each release architecture. Release packages copy the upstream `LICENSE` alongside the application under `licenses/LibProsperoPKG/` (or the corresponding macOS Resources directory).
+The bridge is compiled from source against that pinned revision for each release architecture. Release packages preserve the upstream `LICENSE` under the application license resources.
 
-Packizard does not bundle or launch the standalone PPR-PKG Builder GUI. The current reference GUI version is `0.6.8`; PKG creation is performed through the integrated bridge built from the separately versioned, pinned public LibProsperoPKG source snapshot.
+Packizard does not bundle or launch the standalone PPR-PKG Builder GUI. The current reference GUI version is `0.6.8`; package creation is performed through the integrated bridge.
 
 ## Acknowledgements
 
-Thanks to Nazky, Deckerr97, Pippo, drakmor, SvenGDK and the contributors to the upstream projects whose work and research underpin these workflows.
+Packizard acknowledges Nazky, Deckerr97, Pippo, drakmor, SvenGDK and other public PS5 tooling contributors whose research informed earlier and current workflows. These acknowledgements do not imply that Packizard's current build depends on another application repository.

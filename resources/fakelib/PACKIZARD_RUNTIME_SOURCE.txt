@@ -1,0 +1,3 @@
+Packizard PS5 Runtime source: packizard_runtime/ps5/packizard_ps5_runtime
+ABI compatibility filename: libSceAmpr.sprx
+Build with build_packizard_runtime.sh and PS5_PAYLOAD_SDK.

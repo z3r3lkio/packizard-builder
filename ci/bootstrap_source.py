@@ -156,8 +156,8 @@ def _stabilize_generated_packaging(root: Path) -> None:
                 patched.extend(
                     [
                         indent + 'rm -rf -- "$app/Contents/_CodeSignature"',
-                        indent + 'codesign --verify --strict "$app/Contents/MacOS/workers/ampr_pack/ampr_pack"',
-                        indent + 'codesign --verify --strict "$app/Contents/MacOS/workers/ampr_pack_profile/ampr_pack_profile"',
+                        indent + 'codesign --verify --strict "$app/Contents/MacOS/workers/Packizard-Packer-Worker/Packizard-Packer-Worker"',
+                        indent + 'codesign --verify --strict "$app/Contents/MacOS/workers/Packizard-Profile-Worker/Packizard-Profile-Worker"',
                         indent + 'codesign --verify --strict "$app/Contents/MacOS/pkg_bridge/Packizard.PkgBridge"',
                     ]
                 )

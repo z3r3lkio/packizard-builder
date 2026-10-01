@@ -14,16 +14,18 @@ import packizard_container as container
 import packizard_packer as packer
 
 
-def build_source_index(root: Path, paths: list[str]) -> Path:
+def build_source_index(root: Path, paths: list[str], size_overrides: dict[str, int] | None = None) -> Path:
     records = bytearray()
     strings = bytearray()
+    size_overrides = size_overrides or {}
     for relative in paths:
         encoded = f"/app0/{relative}".encode("utf-8")
         offset = len(strings)
         strings.extend(encoded)
         strings.append(0)
         stat = (root / relative).stat()
-        records.extend(container.AMPRIDX3_ENTRY.pack(offset, len(encoded), stat.st_size, stat.st_mtime_ns))
+        size = size_overrides.get(relative, stat.st_size)
+        records.extend(container.AMPRIDX3_ENTRY.pack(offset, len(encoded), size, stat.st_mtime_ns))
     header_size = container.AMPRIDX3_HEADER.size
     hash_offset = header_size + len(records) + len(strings)
     data = container.AMPRIDX3_HEADER.pack(
@@ -79,6 +81,28 @@ class PackizardPackerTests(unittest.TestCase):
             extracted = base / "extracted"
             packer.unpack(packed / "ampr_assets.index", extracted, no_progress=True)
             self.assertEqual((extracted / "assets" / "world.uasset").read_bytes(), original)
+
+    def test_loose_replacement_metadata_can_differ_from_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            source = base / "source"
+            (source / "fakelib").mkdir(parents=True)
+            (source / "assets").mkdir()
+            (source / "fakelib" / "libSceAmpr.sprx").write_bytes(b"old")
+            (source / "assets" / "data.bin").write_bytes(b"A" * 65536)
+            index = build_source_index(
+                source,
+                ["fakelib/libSceAmpr.sprx", "assets/data.bin"],
+                {"fakelib/libSceAmpr.sprx": 4096},
+            )
+            config = base / "p.toml"
+            config.write_text('[[rule]]\naction="compress"\ninclude=["assets/**"]\n', encoding="utf-8")
+            packed = base / "packed"
+            packer.build(source, index, packed, config, ["fakelib/**"], no_progress=True)
+            manifest = container.load_manifest(packed / "ampr_assets.index")
+            runtime = next(record for file_id, record in enumerate(manifest.files, 1) if manifest.file_path(file_id) == "/app0/fakelib/libSceAmpr.sprx")
+            self.assertEqual(runtime.logical_size, 4096)
+            self.assertFalse(runtime.flags & container.FILE_FLAG_PACKED)
 
     def test_compatibility_manifest_is_deterministic(self):
         with tempfile.TemporaryDirectory() as temporary:

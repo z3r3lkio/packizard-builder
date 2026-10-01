@@ -110,15 +110,18 @@ def build(root: Path, ampr_index: Path, output: Path, config_path: Path | None, 
         source = root / relative
         if not source.is_file():
             raise FileNotFoundError(f"indexed source missing: {relative}")
-        if source.stat().st_size != entry.size:
-            raise RuntimeError(f"indexed source size changed: {relative}")
         action, rule = _rule_for(config, relative)
         forced_loose = any(_matches(relative, pattern) for pattern in excludes)
         should_pack = action in {"pack", "compress"} and not forced_loose
         shift = block_shift(rule.get("block_size", 1 << default_shift)) if rule else default_shift
         if should_pack:
+            if source.stat().st_size != entry.size:
+                raise RuntimeError(f"indexed packed source size changed: {relative}")
             selected[file_id] = (source, relative, rule, shift)
         else:
+            # Loose entries deliberately trust index metadata. Packizard may have
+            # installed an intentional replacement into the output tree (for
+            # example the runtime library) while leaving the source untouched.
             loose.append(relative)
 
     total_bytes = sum(entries[file_id - 1].size for file_id in selected)
@@ -147,7 +150,10 @@ def build(root: Path, ampr_index: Path, output: Path, config_path: Path | None, 
             if not stored and not raw:
                 continue
             payloads.append(stored)
-            chunks.append(ChunkRecord(0, len(stored), len(raw), 0, CHUNK_CODEC_LZ4 if use_lz4 else CHUNK_CODEC_RAW, CHUNK_FLAG_PAGE_ALIGNED | CHUNK_FLAG_PAGE_CONTAINED))
+            placement_flags = CHUNK_FLAG_PAGE_ALIGNED
+            if len(stored) <= io_page:
+                placement_flags |= CHUNK_FLAG_PAGE_CONTAINED
+            chunks.append(ChunkRecord(0, len(stored), len(raw), 0, CHUNK_CODEC_LZ4 if use_lz4 else CHUNK_CODEC_RAW, placement_flags))
             checksums.append(crc32(raw))
             done_bytes += len(raw)
             _progress("packing", int(done_bytes * 80 / max(1, total_bytes)), f"packing {relative}", started, no_progress)

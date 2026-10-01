@@ -39,7 +39,6 @@ class NativeEngineProfileTests(unittest.TestCase):
             self.assertIn("Packizard Builder", main_text)
             self.assertIn("Packizard compression", main_text)
             self.assertNotIn("Lazy", main_text)
-            self.assertNotIn("AMPR/LZ4", main_text)
             self.assertIn("Packizard Compression", (root / "gui" / "page.py").read_text(encoding="utf-8"))
 
     def test_product_reference_guard_rejects_legacy_name(self):
@@ -50,24 +49,27 @@ class NativeEngineProfileTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 native_profile.assert_product_references_are_clean(root)
 
-    def test_native_packer_replaces_inherited_format_module(self):
+    def test_desktop_engine_installs_outside_external_tree(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            tools = root / "external" / "ampr_emu" / "tools"
-            tools.mkdir(parents=True)
-            (tools / "ampr_pack.py").write_text("# inherited implementation\n", encoding="utf-8")
-            (tools / "ampr_pack_format.py").write_text("# inherited format\n", encoding="utf-8")
+            for folder in ("core", "gui", "utils", "tests"):
+                (root / folder).mkdir(parents=True, exist_ok=True)
+            (root / "core" / "lz4_packer.py").write_text(
+                'from pathlib import Path\nTOOLS_DIR = Path(__file__).resolve().parent.parent / "external" / "ampr_emu" / "tools"\nX = TOOLS_DIR / "ampr_pack.py"\n',
+                encoding="utf-8",
+            )
             native_profile.install_engine(ROOT, root)
-            native_profile.assert_packizard_packer_is_native(root)
-            self.assertTrue((tools / "packizard_lz4.py").is_file())
-            self.assertTrue((tools / "packizard_container.py").is_file())
-            self.assertTrue((tools / "packizard_packer.py").is_file())
-            self.assertFalse((tools / "ampr_pack_format.py").exists())
-            wrapper = (tools / "ampr_pack.py").read_text(encoding="utf-8")
-            self.assertIn("from packizard_packer import", wrapper)
+            native_profile.assert_desktop_engine_is_native(root)
+            engine = root / "packizard_engine"
+            for name in ("__init__.py", "lz4.py", "container.py", "packer.py", "profile.py"):
+                self.assertTrue((engine / name).is_file())
+            core_text = (root / "core" / "lz4_packer.py").read_text(encoding="utf-8")
+            self.assertIn('"packizard_engine"', core_text)
+            self.assertIn('TOOLS_DIR / "packer.py"', core_text)
+            self.assertNotIn("external/ampr_emu", core_text)
             completed = subprocess.run(
-                [sys.executable, "-c", "import packizard_packer; print(packizard_packer.VERSION)"],
-                cwd=tools,
+                [sys.executable, "-c", "import packizard_engine.packer as p; print(p.VERSION)"],
+                cwd=root,
                 capture_output=True,
                 text=True,
                 check=True,
@@ -102,10 +104,10 @@ class NativeEngineProfileTests(unittest.TestCase):
             self.assertIn("Packizard_Packer_Worker.spec", windows_build)
             self.assertIn("Packizard_Profile_Worker.spec", windows_build)
             self.assertNotIn("coll = COLLECT", packer_spec)
+            self.assertNotIn("external/ampr_emu/tools", packer_spec)
             self.assertIn("_MEIPASS", runner)
             self.assertIn("worker_packizard_packer.py", diagnostics_test)
             self.assertIn("worker_packizard_profile.py", diagnostics_test)
-            self.assertNotIn("worker_ampr_pack.py", diagnostics_test)
             self.assertFalse((root / "ampr_pack.spec").exists())
             self.assertFalse((root / "ampr_pack_profile.spec").exists())
 

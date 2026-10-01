@@ -81,6 +81,10 @@ class NativeEngineProfileTests(unittest.TestCase):
                 (root / folder).mkdir()
             (root / "utils" / "tool_runner.py").write_text('ROOT = Path(sys.executable).resolve().parent\n', encoding="utf-8")
             (root / "tests" / "test_cross_platform.py").write_text('', encoding="utf-8")
+            (root / "tests" / "test_build_diagnostics.py").write_text(
+                "entry = root / 'worker_ampr_pack.py'\nprofile = root / 'worker_ampr_pack_profile.py'\n",
+                encoding="utf-8",
+            )
             for name in ("build_windows.ps1", "build_linux.sh", "build_macos.sh"):
                 (root / name).write_text('ampr_pack.spec ampr_pack_profile.spec ampr_pack ampr_pack_profile\n', encoding="utf-8")
             worker_profile.apply(root)
@@ -89,6 +93,7 @@ class NativeEngineProfileTests(unittest.TestCase):
             windows_build = (root / "build_windows.ps1").read_text(encoding="utf-8")
             packer_spec = (root / "Packizard_Packer_Worker.spec").read_text(encoding="utf-8")
             runner = (root / "utils" / "tool_runner.py").read_text(encoding="utf-8")
+            diagnostics_test = (root / "tests" / "test_build_diagnostics.py").read_text(encoding="utf-8")
             self.assertIn('name="Packizard-Builder"', main_spec)
             self.assertIn("workers/Packizard-Packer-Worker", main_spec)
             self.assertIn("workers/Packizard-Profile-Worker", main_spec)
@@ -98,6 +103,9 @@ class NativeEngineProfileTests(unittest.TestCase):
             self.assertIn("Packizard_Profile_Worker.spec", windows_build)
             self.assertNotIn("coll = COLLECT", packer_spec)
             self.assertIn("_MEIPASS", runner)
+            self.assertIn("worker_packizard_packer.py", diagnostics_test)
+            self.assertIn("worker_packizard_profile.py", diagnostics_test)
+            self.assertNotIn("worker_ampr_pack.py", diagnostics_test)
             self.assertFalse((root / "ampr_pack.spec").exists())
             self.assertFalse((root / "ampr_pack_profile.spec").exists())
 

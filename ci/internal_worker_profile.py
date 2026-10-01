@@ -48,6 +48,16 @@ def _patch_cross_platform_test(root: Path) -> None:
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
+def _patch_build_diagnostics_test(root: Path) -> None:
+    path = root / "tests" / "test_build_diagnostics.py"
+    if not path.is_file():
+        return
+    text = path.read_text(encoding="utf-8")
+    text = text.replace("worker_ampr_pack.py", "worker_packizard_packer.py")
+    text = text.replace("worker_ampr_pack_profile.py", "worker_packizard_profile.py")
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
 def apply(root: Path) -> None:
     root = Path(root)
     (root / "worker_packizard_packer.py").write_text(PACK_ENTRY, encoding="utf-8", newline="\n")
@@ -65,6 +75,7 @@ def apply(root: Path) -> None:
         (root / legacy).unlink(missing_ok=True)
     _write_tool_runner(root)
     _patch_cross_platform_test(root)
+    _patch_build_diagnostics_test(root)
     changed = _patch_build_scripts(root)
     print(f"Configured Packizard worker identities; patched {changed} packaging script(s)")
 

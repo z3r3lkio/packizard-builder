@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv*/
+build/
+dist/
+release/
+*.AppImage
+*.zip
+pkg_bridge/
+vendor/LibProsperoPKG/

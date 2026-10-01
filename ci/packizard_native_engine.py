@@ -2,14 +2,16 @@
 """Apply the first Packizard-native engine migration to a reconstructed tree.
 
 This profile is intentionally transitional. It replaces the compression codec,
-product-facing engine naming and worker packaging assumptions while preserving
+product-facing engine naming and Windows packaging assumptions while preserving
 AMPRPAK4 compatibility. Once the inherited source tree has been absorbed into
 this repository, this script can disappear and its changes become normal source.
 """
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import shutil
+import sys
 from pathlib import Path
 
 
@@ -74,6 +76,21 @@ def patch_product_ui(output: Path) -> list[Path]:
     return changed
 
 
+def _apply_single_executable_profile(output: Path) -> None:
+    # The current milestone is the Windows distribution used for local PS5
+    # workflows. Linux AppImage is already a single distributable file and
+    # macOS requires an application bundle by platform convention.
+    if sys.platform != "win32":
+        return
+    profile_path = Path(__file__).resolve().parent / "single_executable_profile.py"
+    spec = importlib.util.spec_from_file_location("packizard_single_executable", profile_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load single-executable profile: {profile_path}")
+    profile = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(profile)
+    profile.apply(output)
+
+
 def write_engine_identity(output: Path) -> None:
     path = output / "core" / "packizard_engine.py"
     path.write_text(
@@ -86,6 +103,7 @@ def write_engine_identity(output: Path) -> None:
         encoding="utf-8",
         newline="\n",
     )
+    _apply_single_executable_profile(output)
 
 
 def assert_product_references_are_clean(output: Path) -> None:

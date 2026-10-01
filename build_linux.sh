@@ -47,9 +47,11 @@ cd -- "$project_dir"
 "$python" -m PyInstaller --noconfirm --clean --workpath "$work" --distpath "$dist" Packizard_Packer_Worker.spec
 "$python" -m PyInstaller --noconfirm --clean --workpath "$work" --distpath "$dist" Packizard_Profile_Worker.spec
 
-mkdir -p -- "$dist/Packizard_Builder/workers"
-cp -a -- "$dist/Packizard-Packer-Worker" "$dist/Packizard_Builder/workers/"
-cp -a -- "$dist/Packizard-Profile-Worker" "$dist/Packizard_Builder/workers/"
+mkdir -p -- \
+    "$dist/Packizard_Builder/workers/Packizard-Packer-Worker" \
+    "$dist/Packizard_Builder/workers/Packizard-Profile-Worker"
+cp -- "$dist/Packizard-Packer-Worker" "$dist/Packizard_Builder/workers/Packizard-Packer-Worker/Packizard-Packer-Worker"
+cp -- "$dist/Packizard-Profile-Worker" "$dist/Packizard_Builder/workers/Packizard-Profile-Worker/Packizard-Profile-Worker"
 
 "$python" scripts/prepare_pkg_bridge.py --rid "linux-$arch"
 mkdir -p -- "$dist/Packizard_Builder/pkg_bridge"

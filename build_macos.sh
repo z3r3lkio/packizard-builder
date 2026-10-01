@@ -65,14 +65,18 @@ chmod +x "$app/Contents/MacOS/Packizard_Builder" \
     "$app/Contents/MacOS/workers/Packizard-Profile-Worker/Packizard-Profile-Worker" \
     "$app/Contents/MacOS/pkg_bridge/Packizard.PkgBridge"
 
-# Ad-hoc signatures keep the local bundle structurally consistent. They are NOT
-# Apple Developer ID signing and do not imply notarization.
+# Sign executable payloads individually. The bridge directory also contains
+# documentation files, so treating the whole application bundle as a nested
+# code object with --deep is incorrect and fails strict verification.
 xattr -cr "$app"
 codesign --force --sign - "$app/Contents/MacOS/workers/Packizard-Packer-Worker/Packizard-Packer-Worker"
 codesign --force --sign - "$app/Contents/MacOS/workers/Packizard-Profile-Worker/Packizard-Profile-Worker"
 codesign --force --sign - "$app/Contents/MacOS/pkg_bridge/Packizard.PkgBridge"
-codesign --force --sign - "$app"
-codesign --verify --deep --strict "$app"
+rm -rf -- "$app/Contents/_CodeSignature"
+codesign --verify --strict "$app/Contents/MacOS/Packizard_Builder"
+codesign --verify --strict "$app/Contents/MacOS/workers/Packizard-Packer-Worker/Packizard-Packer-Worker"
+codesign --verify --strict "$app/Contents/MacOS/workers/Packizard-Profile-Worker/Packizard-Profile-Worker"
+codesign --verify --strict "$app/Contents/MacOS/pkg_bridge/Packizard.PkgBridge"
 
 zip_path="$release_root/Packizard-Builder-$version-macOS-$arch.zip"
 portable="$release_root/Packizard-Builder-$version-macOS-$arch.tar.gz"

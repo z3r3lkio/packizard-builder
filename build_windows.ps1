@@ -25,15 +25,19 @@ $archive = Join-Path $releaseRoot "Packizard-Builder-$version-Windows-$Architect
 $oldPath = $env:Path
 $pushed = $false
 try {
-    $env:Path = "$(Split-Path -Parent $python);$env:SystemRoot\System32;$env:SystemRoot"
     if (Test-Path -LiteralPath $releaseRoot) { Remove-Item -LiteralPath $releaseRoot -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $work, $dist | Out-Null
     Push-Location $projectDir
     $pushed = $true
 
+    # Prepare build-time assets while the normal PATH still exposes the .NET SDK.
     & $python scripts\prepare_windows_icon.py
     $rid = "win-$Architecture"
     & $python scripts\prepare_pkg_bridge.py --rid $rid
+
+    # Keep PyInstaller isolated from unrelated developer-tool DLLs only after
+    # the .NET bridge has been published.
+    $env:Path = "$(Split-Path -Parent $python);$env:SystemRoot\System32;$env:SystemRoot"
 
     & $python -m PyInstaller --noconfirm --clean --workpath (Join-Path $work "packer") --distpath $dist Packizard_Packer_Worker.spec
     & $python -m PyInstaller --noconfirm --clean --workpath (Join-Path $work "profile") --distpath $dist Packizard_Profile_Worker.spec

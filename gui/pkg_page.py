@@ -20,9 +20,7 @@ from PySide6.QtWidgets import (
 
 from core.param_parser import parse_game_info
 from core.pkg_engine import (
-    ENGINE_NAME,
     ENGINE_VERSION,
-    PPR_GUI_REFERENCE_VERSION,
     PkgBuildOptions,
     PkgEngineError,
     probe_pkg_engine,
@@ -54,11 +52,7 @@ def _pkg_version(value: str) -> str:
 
 
 class PkgPage(QWidget):
-    """Integrated LibProsperoPKG builder UI.
-
-    This page intentionally does not launch another GUI. Packizard talks to its bundled
-    Packizard.PkgBridge helper, which links against the pinned upstream LibProsperoPKG release.
-    """
+    """Packizard's integrated PKG builder UI."""
 
     def __init__(self, state, parent=None):
         super().__init__(parent)
@@ -88,7 +82,7 @@ class PkgPage(QWidget):
         title = QLabel("Build PKG")
         title.setObjectName("Header")
         subtitle = QLabel(
-            "Construye el PKG dentro de Packizard con el motor LibProsperoPKG integrado. "
+            "Construye el PKG directamente dentro de Packizard. "
             "No se abre ninguna aplicación externa."
         )
         subtitle.setObjectName("SubHeader")
@@ -96,7 +90,7 @@ class PkgPage(QWidget):
         text.addWidget(title)
         text.addWidget(subtitle)
         header.addLayout(text, 1)
-        self.engine_badge = StatusBadge(f"{ENGINE_NAME} v{ENGINE_VERSION}", icon="package")
+        self.engine_badge = StatusBadge(f"Packizard PKG Engine v{ENGINE_VERSION}", icon="package")
         header.addWidget(self.engine_badge, 0, Qt.AlignTop)
         layout.addLayout(header)
 
@@ -142,7 +136,7 @@ class PkgPage(QWidget):
 
         options = SectionCard(
             "Build options",
-            f"Opciones del motor integrado. Los defaults siguen la referencia PPR-PKG Builder {PPR_GUI_REFERENCE_VERSION} cuando la API pública equivalente está disponible.",
+            "Opciones del motor PKG integrado de Packizard.",
             label_width=180,
         )
         self.mode_combo = CenteredComboBox()
@@ -175,13 +169,13 @@ class PkgPage(QWidget):
 
         self.verify_cb = QCheckBox("Verify package after build")
         self.verify_cb.setChecked(True)
-        self.verify_cb.setToolTip("Run LibProsperoPKG structural acceptance validation and fail the build on errors.")
+        self.verify_cb.setToolTip("Valida estructuralmente el paquete al terminar y detiene la construcción si detecta errores.")
         options.add_row("Verification", self.verify_cb)
         layout.addWidget(options)
 
         run_card = SectionCard(
             "Build",
-            "El trabajo se ejecuta mediante el helper interno Packizard.PkgBridge y LibProsperoPKG; el log aparece aquí y puede cancelarse.",
+            "El trabajo se ejecuta mediante el motor PKG integrado de Packizard; el log aparece aquí y puede cancelarse.",
         )
         self.log_output = QPlainTextEdit()
         self.log_output.setReadOnly(True)
@@ -233,14 +227,12 @@ class PkgPage(QWidget):
             self.status_label.setText(str(exc))
         if info:
             keys = "keys available" if info.keys_available else "key material unavailable"
-            self.engine_badge.setText(f"{info.engine_name} v{info.engine_version} · integrated")
-            self.engine_badge.setToolTip(
-                f"{info.path}\n{keys}\nref {info.engine_ref}\nPPR-PKG Builder reference {info.ppr_gui_reference_version}"
-            )
+            self.engine_badge.setText(f"Packizard PKG Engine v{info.engine_version} · integrated")
+            self.engine_badge.setToolTip(f"Motor PKG integrado de Packizard\n{keys}")
             self.engine_badge.setProperty("warning", not bool(info.keys_available))
             self.build_btn.setEnabled(bool(info.keys_available))
         else:
-            self.engine_badge.setText(f"{ENGINE_NAME} v{ENGINE_VERSION} · bridge missing")
+            self.engine_badge.setText(f"Packizard PKG Engine v{ENGINE_VERSION} · bridge missing")
             self.engine_badge.setProperty("warning", True)
             self.build_btn.setEnabled(False)
             if self.worker is None:

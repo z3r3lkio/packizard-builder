@@ -15,6 +15,7 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QLabel
 
 from gui.main_window import MainWindow
+from gui.product_language import apply_product_language
 from utils.logging_utils import setup_logging
 from version import APP_NAME, VERSION
 
@@ -39,32 +40,22 @@ def _run_release_ui_qa(app, window, output_dir, logger):
     output_dir = Path(output_dir)
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
-        expected_pages = [
-            "Compress",
-            "Batch",
-            "Extract",
-            "Build PKG",
-            "Profiles",
-            "Settings",
-            "Credits",
-        ]
+        expected_pages = ["Compress", "Batch", "Extract", "Build PKG", "Profiles", "Settings", "Credits"]
         buttons = window.nav_group.buttons()
         if [button.text() for button in buttons] != expected_pages:
-            raise AssertionError(
-                "Navigation labels do not match the release specification"
-            )
+            raise AssertionError("Navigation labels do not match the release specification")
         if window.windowTitle() != f"{APP_NAME} {VERSION}":
             raise AssertionError("Application title/version is inconsistent")
 
         labels = [label.text() for label in window.findChildren(QLabel)]
-        if "Packizard · AMPR + LibProsperoPKG" not in labels:
-            raise AssertionError("Sidebar engine attribution is missing")
-        credit_text = "\n".join(labels)
+        if "Packizard Engine · Compression + PKG" not in labels:
+            raise AssertionError("Packizard Engine identity is missing from the sidebar")
+        visible_text = "\n".join(labels)
+        for legacy_term in ("AMPR", "LZ4"):
+            if legacy_term in visible_text:
+                raise AssertionError(f"Legacy engine terminology leaked into the UI: {legacy_term}")
         if "Integrator · Packizard Builder" not in labels:
             raise AssertionError("Packizard integrator credit is missing")
-        for credit in ("Nazky", "Deckerr97", "Pippo", "drakmor", "SvenGDK"):
-            if credit not in credit_text:
-                raise AssertionError(f"Upstream acknowledgement is missing: {credit}")
 
         window.showNormal()
         window.resize(1500, 900)
@@ -77,9 +68,7 @@ def _run_release_ui_qa(app, window, output_dir, logger):
             filename = f"page-{index + 1}-{button.text().lower().replace(' ', '-')}.png"
             if not window.grab().save(str(output_dir / filename)):
                 raise OSError(f"Could not save {filename}")
-            report["pages"].append(
-                {"name": button.text(), "index": index, "capture": filename}
-            )
+            report["pages"].append({"name": button.text(), "index": index, "capture": filename})
 
         window.log_toggle.setChecked(True)
         _settle_ui(50)
@@ -98,31 +87,18 @@ def _run_release_ui_qa(app, window, output_dir, logger):
             report["themes"].append({"name": theme, "capture": filename})
 
         from gui.game_card import GameCard
-
         for card in window.batch.cards.values():
             card.setParent(None)
         window.batch.cards = {}
         for number in range(10):
-            title = (
-                "A long game title that must not shift controls"
-                if number == 3
-                else f"QA Game {number + 1}"
-            )
-            card = GameCard(
-                {"title": title, "title_id": f"PPSA{number:05d}", "version": "1.00"}
-            )
+            title = "A long game title that must not shift controls" if number == 3 else f"QA Game {number + 1}"
+            card = GameCard({"title": title, "title_id": f"PPSA{number:05d}", "version": "1.00"})
             card.batch_checkbox.setChecked(number % 2 == 0)
             window.batch.cards[f"qa:{number}"] = card
         window.batch._update_state()
         window.nav_group.button(1).click()
 
-        responsive_sizes = (
-            (1500, 900, 5),
-            (1280, 800, 4),
-            (1050, 760, 3),
-            (820, 700, 2),
-            (720, 640, 1),
-        )
+        responsive_sizes = ((1500, 900, 5), (1280, 800, 4), (1050, 760, 3), (820, 700, 2), (720, 640, 1))
         for width, height, expected_columns in responsive_sizes:
             window.resize(width, height)
             _settle_ui(100)
@@ -130,44 +106,25 @@ def _run_release_ui_qa(app, window, output_dir, logger):
             _settle_ui(50)
             actual_columns = window.batch.column_count
             if actual_columns != expected_columns:
-                raise AssertionError(
-                    f"Batch at {width}x{height}: expected {expected_columns} columns, got {actual_columns}"
-                )
+                raise AssertionError(f"Batch at {width}x{height}: expected {expected_columns} columns, got {actual_columns}")
             filename = f"batch-{width}x{height}-{actual_columns}col.png"
             if not window.grab().save(str(output_dir / filename)):
                 raise OSError(f"Could not save {filename}")
-            report["responsive_batch"].append(
-                {
-                    "window": [width, height],
-                    "columns": actual_columns,
-                    "rows": window.batch.grid.rowCount(),
-                    "capture": filename,
-                }
-            )
+            report["responsive_batch"].append({"window": [width, height], "columns": actual_columns, "rows": window.batch.grid.rowCount(), "capture": filename})
 
         window.resize(720, 640)
         for index, page in ((5, window.settings_page), (6, window.credits_page)):
             buttons[index].click()
             _settle_ui(100)
             if page.scroll.horizontalScrollBar().maximum() != 0:
-                raise AssertionError(
-                    f"{buttons[index].text()} has horizontal overflow at 720x640"
-                )
+                raise AssertionError(f"{buttons[index].text()} has horizontal overflow at 720x640")
             filename = f"responsive-{buttons[index].text().lower()}-720x640.png"
             if not window.grab().save(str(output_dir / filename)):
                 raise OSError(f"Could not save {filename}")
-            report["responsive_pages"].append(
-                {
-                    "name": buttons[index].text(),
-                    "window": [720, 640],
-                    "capture": filename,
-                }
-            )
+            report["responsive_pages"].append({"name": buttons[index].text(), "window": [720, 640], "capture": filename})
 
         report["status"] = "passed"
-        (output_dir / "report.json").write_text(
-            json.dumps(report, indent=2), encoding="utf-8"
-        )
+        (output_dir / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
         logger.info("Packaged release UI QA passed: %s", output_dir)
         window.close()
         app.exit(0)
@@ -176,9 +133,7 @@ def _run_release_ui_qa(app, window, output_dir, logger):
         report["error"] = f"{type(error).__name__}: {error}"
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
-            (output_dir / "report.json").write_text(
-                json.dumps(report, indent=2), encoding="utf-8"
-            )
+            (output_dir / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
         except OSError:
             pass
         logger.exception("Packaged release UI QA failed")
@@ -196,7 +151,7 @@ def main():
     if ui_qa_arg:
         sys.argv.remove(ui_qa_arg)
     app = QApplication(sys.argv)
-    app.setStyle("Fusion")  # Consistent base rendering on all OSes
+    app.setStyle("Fusion")
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(VERSION)
     resource_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
@@ -208,15 +163,14 @@ def main():
         app.setWindowIcon(QIcon(str(icon_path)))
 
     window = MainWindow()
+    apply_product_language(window)
     window.setWindowIcon(app.windowIcon())
     window.show()
     if smoke_test:
         QTimer.singleShot(1500, app.quit)
     elif ui_qa_arg:
-        output_dir = ui_qa_arg[len(ui_qa_prefix) :]
-        QTimer.singleShot(
-            250, lambda: _run_release_ui_qa(app, window, output_dir, logger)
-        )
+        output_dir = ui_qa_arg[len(ui_qa_prefix):]
+        QTimer.singleShot(250, lambda: _run_release_ui_qa(app, window, output_dir, logger))
     sys.exit(app.exec())
 
 

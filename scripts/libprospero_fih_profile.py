@@ -4,6 +4,7 @@ from pathlib import Path
 
 FIH_BUILDER_RELATIVE = Path("src/LibProsperoPkg/PKG/ProsperoFihBuilder.cs")
 PKG_BUILDER_RELATIVE = Path("src/LibProsperoPkg/PKG/ProsperoPkgBuilder.cs")
+OUTER_PFS_BUILDER_RELATIVE = Path("src/LibProsperoPkg/PFS/ProsperoOuterPfsBuilder.cs")
 
 _FIH_ORIGINAL = """                uint metaOrInodes = nwonly ? (uint)nwonlyInnerContentInodes : (uint)(totalBlocks - innerBlocks);\n                BinaryPrimitives.WriteUInt32LittleEndian(h.AsSpan(ProsperoPkgLayout.FihInnerImageBlockCountField), innerBlocks);\n                BinaryPrimitives.WriteUInt32LittleEndian(h.AsSpan(ProsperoPkgLayout.FihMetaBlockCountField), metaOrInodes);\n                BinaryPrimitives.WriteUInt32LittleEndian(h.AsSpan(ProsperoPkgLayout.FihMetaBlockCountMirrorField), metaOrInodes);\n"""
 
@@ -12,6 +13,10 @@ _FIH_PATCHED = """                uint metaOrInodes = nwonly ? (uint)nwonlyInner
 _CNT_FLAGS_ORIGINAL = """    // The PS5 Flags1 word for each entry id.\n    private static uint Flags1For(uint id) => id switch\n    {\n        (uint)ProsperoCntEntryId.DIGESTS => 0x40000000,\n        (uint)ProsperoCntEntryId.ENTRY_KEYS => 0x60000000,\n        (uint)ProsperoCntEntryId.IMAGE_KEY => 0x60000000,        // image key is not entry-encrypted.\n        (uint)ProsperoCntEntryId.GENERAL_DIGESTS => 0x60000000,\n        (uint)ProsperoCntEntryId.METAS => 0x60000000,\n        (uint)ProsperoCntEntryId.ENTRY_NAMES => 0x40000000,\n        0x2000 => 0x00000000,                          // param.json\n        _ => 0x08000000,                               // media / data entries\n    };\n\n    // No CNT entries in this package class are entry-encrypted, so Flags2 is always zero.\n    private static uint Flags2For(uint id) => 0u;\n"""
 
 _CNT_FLAGS_PATCHED = """    // The PS5 Flags1 word for each entry id.\n    private static uint Flags1For(uint id) => id switch\n    {\n        (uint)ProsperoCntEntryId.DIGESTS => 0x40000000,\n        (uint)ProsperoCntEntryId.ENTRY_KEYS => 0x60000000,\n        (uint)ProsperoCntEntryId.IMAGE_KEY => 0x60000000,        // image key is not entry-encrypted.\n        (uint)ProsperoCntEntryId.GENERAL_DIGESTS => 0x60000000,\n        (uint)ProsperoCntEntryId.METAS => 0x60000000,\n        (uint)ProsperoCntEntryId.ENTRY_NAMES => 0x40000000,\n        (uint)ProsperoCntEntryId.LICENSE_DAT => 0x80000000,\n        (uint)ProsperoCntEntryId.LICENSE_INFO => 0x80000000,\n        (uint)ProsperoCntEntryId.NPTITLE_DAT => 0x80000000,\n        (uint)ProsperoCntEntryId.NPBIND_DAT => 0x80000000,\n        0x2020 => 0x80000000,                         // uds/npbind.dat\n        0x2021 => 0x80000000,                         // trophy2/npbind.dat\n        0x2000 => 0x00000000,                          // param.json\n        _ => 0x08000000,                               // media / data entries\n    };\n\n    // Reference debug CNTs distinguish backend-authored system-file classes in Flags2.\n    // 0x3000 is used for license.dat, nptitle.dat and npbind.dat; license.info uses 0x4000.\n    private static uint Flags2For(uint id) => id switch\n    {\n        (uint)ProsperoCntEntryId.LICENSE_DAT => 0x00003000,\n        (uint)ProsperoCntEntryId.LICENSE_INFO => 0x00004000,\n        (uint)ProsperoCntEntryId.NPTITLE_DAT => 0x00003000,\n        (uint)ProsperoCntEntryId.NPBIND_DAT => 0x00003000,\n        0x2020 => 0x00003000,                         // uds/npbind.dat\n        0x2021 => 0x00003000,                         // trophy2/npbind.dat\n        _ => 0u,\n    };\n"""
+
+_OUTER_ENCRYPT_ORIGINAL = """        var (tweak, data) = ProsperoPfsKeys.DeriveImageEncryptionKeys(ekpfs, seed);\n        Encrypt(build, tweak, data);\n\n        return new ProsperoOuterPackageImage\n"""
+
+_OUTER_ENCRYPT_PATCHED = """        // Known-good FullDebug FIH references keep the finalized outer PFS on disk in plaintext.\n        // BuildPlaintext has already produced the signed PFS structure and all integrity material above;\n        // applying AES-XTS here turns pfs_image.dat, NAPS and structural metadata into ciphertext that\n        // sceNpDrmContentCheckImage rejects before /app0 can mount. Keep the generic Encrypt/Transform\n        // APIs intact for explicit keyed/retail use, but do not encrypt the FullDebug package build path.\n\n        return new ProsperoOuterPackageImage\n"""
 
 
 def _patch_exact(path: Path, original: str, patched: str, label: str) -> bool:
@@ -30,7 +35,7 @@ def _patch_exact(path: Path, original: str, patched: str, label: str) -> bool:
 
 
 def apply_fih_reference_profile(vendor_dir: str | Path) -> bool:
-    """Apply Packizard's reference-backed FIH/CNT image-validation profile.
+    """Apply Packizard's reference-backed FIH/CNT/outer-PFS image-validation profile.
 
     Returns True when any pinned source file was changed and False when the
     complete profile was already applied. Every rewrite uses an exact preimage
@@ -50,5 +55,11 @@ def apply_fih_reference_profile(vendor_dir: str | Path) -> bool:
         _CNT_FLAGS_ORIGINAL,
         _CNT_FLAGS_PATCHED,
         "CNT package builder",
+    )
+    changed |= _patch_exact(
+        vendor / OUTER_PFS_BUILDER_RELATIVE,
+        _OUTER_ENCRYPT_ORIGINAL,
+        _OUTER_ENCRYPT_PATCHED,
+        "outer PFS package builder",
     )
     return changed

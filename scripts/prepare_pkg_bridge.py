@@ -14,6 +14,8 @@ VERSION_FILE = ROOT / "bridge" / "LIBPROSPERO_VERSION"
 VENDOR_DIR = ROOT / "vendor" / "LibProsperoPKG"
 PROJECT = ROOT / "bridge" / "Packizard.PkgBridge" / "Packizard.PkgBridge.csproj"
 
+from libprospero_fih_profile import apply_fih_reference_profile
+
 
 def run(*args: str, cwd: Path | None = None) -> None:
     subprocess.run(args, cwd=cwd, check=True)
@@ -62,6 +64,11 @@ def main() -> int:
     else:
         ref = ensure_upstream()
 
+    try:
+        profile_changed = apply_fih_reference_profile(VENDOR_DIR)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+
     output = Path(args.output).resolve() if args.output else ROOT / "pkg_bridge" / args.rid
     if output.exists():
         shutil.rmtree(output)
@@ -87,7 +94,11 @@ def main() -> int:
     if not executable.is_file():
         raise SystemExit(f"dotnet publish did not produce {executable}")
     version = VERSION_FILE.read_text(encoding="utf-8").strip()
-    print(f"Built Packizard.PkgBridge for {args.rid} with LibProsperoPKG {version} ({ref})")
+    profile_state = "applied" if profile_changed else "already applied"
+    print(
+        f"Built Packizard.PkgBridge for {args.rid} with LibProsperoPKG {version} ({ref}); "
+        f"Packizard FIH reference profile {profile_state}"
+    )
     return 0
 
 

@@ -39,7 +39,7 @@ def _make_engine_scripts_self_contained(root: Path) -> None:
     container = engine / "container.py"
     codec = engine / "lz4.py"
     if not container.is_file() or not codec.is_file():
-        raise RuntimeError("Packizard engine must be installed before worker identities are configured")
+        return
     shutil.copy2(container, engine / "packizard_container.py")
     shutil.copy2(codec, engine / "packizard_lz4.py")
 

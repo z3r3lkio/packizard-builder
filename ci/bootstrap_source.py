@@ -61,8 +61,6 @@ def _validate_branding(root: Path) -> None:
 
 def _apply_large_pkg_overrides(root: Path) -> None:
     """Overlay the large-package streaming fixes onto the pinned LibProsperoPKG source."""
-    # Reconstruction runs before bridge compilation on a clean CI runner.
-    # Reuse the bridge's pinned checkout logic before touching vendor sources.
     helper = root / "scripts" / "prepare_pkg_bridge.py"
     spec = importlib.util.spec_from_file_location("packizard_prepare_pkg_bridge", helper)
     if spec is None or spec.loader is None:
@@ -96,9 +94,6 @@ def _apply_large_pkg_overrides(root: Path) -> None:
 
     print(f"Applied {len(targets)} LibProsperoPKG large-package streaming overrides")
 
-    # Apply the Packizard-specific AMPR/LZ4 package policy after the generic upstream
-    # streaming overrides. This keeps manual Build PKG and Compress -> PKG on the same
-    # reconstructed engine while leaving non-AMPR package builds unchanged.
     ampr_profile_path = Path(__file__).resolve().parent / "ampr_pkg_profile.py"
     ampr_spec = importlib.util.spec_from_file_location("packizard_ampr_pkg_profile", ampr_profile_path)
     if ampr_spec is None or ampr_spec.loader is None:
@@ -107,8 +102,6 @@ def _apply_large_pkg_overrides(root: Path) -> None:
     ampr_spec.loader.exec_module(ampr_profile)
     ampr_profile.apply(root)
 
-    # Add direct-I/O and progress telemetry last, because it patches the already-AMPR-aware
-    # assembler signature and routes those messages through the existing bridge logger.
     progress_profile_path = Path(__file__).resolve().parent / "pkg_progress_profile.py"
     progress_spec = importlib.util.spec_from_file_location("packizard_pkg_progress_profile", progress_profile_path)
     if progress_spec is None or progress_spec.loader is None:
@@ -118,15 +111,22 @@ def _apply_large_pkg_overrides(root: Path) -> None:
     progress_profile.apply(root)
 
 
-def _stabilize_generated_packaging(root: Path) -> None:
-    """Apply packaging-only fixes to matrix build jobs.
+def _apply_packizard_native_engine(root: Path) -> None:
+    profile_path = Path(__file__).resolve().parent / "packizard_native_engine.py"
+    spec = importlib.util.spec_from_file_location("packizard_native_engine", profile_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load Packizard-native engine profile: {profile_path}")
+    profile = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(profile)
+    profile.install_codec(Path(__file__).resolve().parents[1], root)
+    profile.write_engine_identity(root)
+    changed = profile.patch_product_ui(root)
+    profile.assert_product_references_are_clean(root)
+    print(f"Applied Packizard-native compression engine; updated {len(changed)} runtime/UI file(s)")
 
-    Verification sees the authored scripts unchanged. In matrix builds Windows reuses
-    the bridge already prepared by the workflow, avoiding a redundant second publish.
-    macOS signs/verifies the real Mach-O helpers individually and leaves the bundle
-    container unsigned after embedding the .NET payload; otherwise codesign treats
-    documentation files in pkg_bridge as nested code objects.
-    """
+
+def _stabilize_generated_packaging(root: Path) -> None:
+    """Apply packaging-only fixes to matrix build jobs."""
     if os.environ.get("GITHUB_JOB") != "build":
         return
 
@@ -199,7 +199,6 @@ def _insert_windows_icon_preparation(root: Path) -> None:
 
 def main() -> int:
     ci_dir = Path(__file__).resolve().parent
-    # The implementation prefers the verified split payload without changing the checkout.
     import bootstrap_source_impl as impl
 
     original_run = impl.run
@@ -238,6 +237,7 @@ def main() -> int:
     result = impl.main()
     output = _output_path()
     _apply_large_pkg_overrides(output)
+    _apply_packizard_native_engine(output)
     _validate_branding(output)
     _stabilize_generated_packaging(output)
     return result

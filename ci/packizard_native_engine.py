@@ -44,6 +44,9 @@ def _patch_desktop_engine_paths(output: Path) -> None:
         ('following the official ampr_pack_profile.py tutorial', 'using Packizard Engine traces'),
         ('ampr_pack_profile.py not found', 'Packizard profile engine not found'),
         ('Running ampr_pack_profile.py with', 'Running Packizard profile engine with'),
+        ('from external.ampr_emu.tools.ampr_pack_format import', 'from packizard_engine.container import'),
+        ('from external.ampr_emu.tools.packizard_container import', 'from packizard_engine.container import'),
+        ('from ampr_pack_format import', 'from packizard_engine.container import'),
         ('from packizard_container import', 'from packizard_engine.container import'),
         ('from packizard_lz4 import', 'from packizard_engine.lz4 import'),
         ("{'packizard_packer': command}", "{'packizard_engine.packer': command}"),
@@ -87,8 +90,8 @@ def install_engine(repo_root: Path, output: Path) -> None:
     )
     _patch_desktop_engine_paths(output)
 
-    # Transitional compatibility mirror for verification and old developer
-    # commands. Runtime/UI/build code is forbidden from resolving through it.
+    # Transitional mirror for legacy CI/developer commands only. Product code
+    # is guarded from resolving through this directory and uses packizard_engine.
     tools = output / "external" / "ampr_emu" / "tools"
     if tools.is_dir():
         shutil.copy2(repo_root / "native" / "packizard_lz4.py", tools / "packizard_lz4.py")

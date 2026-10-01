@@ -35,7 +35,7 @@ def _patch_build_scripts(root: Path) -> int:
 
 def _write_tool_runner(root: Path) -> None:
     path = root / "utils" / "tool_runner.py"
-    path.write_text('''"""Resolve Packizard engine helpers in source and frozen builds."""\n\nimport sys\nfrom pathlib import Path\n\n_WORKERS = {\n    "packer": "Packizard-Packer-Worker",\n    "profile": "Packizard-Profile-Worker",\n}\n\ndef command_for(script: Path) -> list[str]:\n    script = Path(script)\n    if getattr(sys, "frozen", False):\n        worker_name = _WORKERS.get(script.stem)\n        if worker_name is None:\n            raise FileNotFoundError(f"Unknown Packizard helper: {script.stem}")\n        suffix = ".exe" if sys.platform == "win32" else ""\n        root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))\n        worker = root / "workers" / worker_name / f"{worker_name}{suffix}"\n        if not worker.is_file():\n            raise FileNotFoundError(f"Bundled Packizard helper not found: {worker}")\n        return [str(worker)]\n    return [sys.executable, str(script)]\n''', encoding="utf-8", newline="\n")
+    path.write_text('''"""Resolve Packizard engine helpers in source and frozen builds."""\n\nimport sys\nfrom pathlib import Path\n\n_WORKERS = {\n    "packer": "Packizard-Packer-Worker",\n    "profile": "Packizard-Profile-Worker",\n}\n\ndef command_for(script: Path) -> list[str]:\n    script = Path(script)\n    worker_name = _WORKERS.get(script.stem)\n    if getattr(sys, "frozen", False):\n        if worker_name is None:\n            raise FileNotFoundError(f"Unknown Packizard helper: {script.stem}")\n        suffix = ".exe" if sys.platform == "win32" else ""\n        root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))\n        worker = root / "workers" / worker_name / f"{worker_name}{suffix}"\n        if not worker.is_file():\n            raise FileNotFoundError(f"Bundled Packizard helper not found: {worker}")\n        return [str(worker)]\n    if worker_name is not None:\n        return [sys.executable, "-m", f"packizard_engine.{script.stem}"]\n    return [sys.executable, str(script)]\n''', encoding="utf-8", newline="\n")
 
 
 def _patch_cross_platform_test(root: Path) -> None:
@@ -47,6 +47,10 @@ def _patch_cross_platform_test(root: Path) -> None:
     text = text.replace('Path("tools") / "ampr_pack.py"', 'Path("packizard_engine") / "packer.py"')
     text = text.replace('"workers" / "ampr_pack" / "ampr_pack"', '"workers" / "Packizard-Packer-Worker" / "Packizard-Packer-Worker"')
     text = text.replace('"workers" / "ampr_pack" / "ampr_pack.exe"', '"workers" / "Packizard-Packer-Worker" / "Packizard-Packer-Worker.exe"')
+    text = text.replace(
+        'tool_runner.command_for(script), [sys.executable, str(script)]',
+        'tool_runner.command_for(script), [sys.executable, "-m", "packizard_engine.packer"]',
+    )
     path.write_text(text, encoding="utf-8", newline="\n")
 
 

@@ -52,9 +52,7 @@ def install_engine(repo_root: Path, output: Path) -> None:
         encoding="utf-8",
         newline="\n",
     )
-
-    legacy_format = tools / "ampr_pack_format.py"
-    legacy_format.unlink(missing_ok=True)
+    (tools / "ampr_pack_format.py").unlink(missing_ok=True)
     candidates = []
     for folder in (output / "external" / "ampr_emu" / "tools", output / "tests"):
         if folder.is_dir():
@@ -76,7 +74,6 @@ def install_engine(repo_root: Path, output: Path) -> None:
 
 
 def install_codec(repo_root: Path, output: Path) -> None:
-    """Compatibility alias retained for older migration tests/callers."""
     install_engine(repo_root, output)
 
 
@@ -90,6 +87,16 @@ def patch_product_ui(output: Path) -> list[Path]:
         if path.is_file() and _replace_text(path, UI_REPLACEMENTS):
             changed.append(path)
     return changed
+
+
+def _apply_internal_worker_profile(output: Path) -> None:
+    profile_path = Path(__file__).resolve().parent / "internal_worker_profile.py"
+    spec = importlib.util.spec_from_file_location("packizard_internal_workers", profile_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load Packizard worker profile: {profile_path}")
+    profile = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(profile)
+    profile.apply(output)
 
 
 def _apply_single_executable_profile(output: Path) -> None:
@@ -114,10 +121,11 @@ def write_engine_identity(output: Path) -> None:
         'PACKER_NAME = "Packizard Packer"\n'
         'PACK_FORMAT = "AMPRPAK4"\n'
         'PACK_FORMAT_COMPATIBILITY = 4\n'
-        'ENGINE_GENERATION = 2\n',
+        'ENGINE_GENERATION = 3\n',
         encoding="utf-8",
         newline="\n",
     )
+    _apply_internal_worker_profile(output)
     _apply_single_executable_profile(output)
 
 
@@ -162,7 +170,7 @@ def main() -> int:
     changed = patch_product_ui(output)
     assert_product_references_are_clean(output)
     assert_packizard_packer_is_native(output)
-    print(f"Packizard-native engine generation 2 applied; updated {len(changed)} runtime/UI file(s)")
+    print(f"Packizard-native engine generation 3 applied; updated {len(changed)} runtime/UI file(s)")
     return 0
 
 

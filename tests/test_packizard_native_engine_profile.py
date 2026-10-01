@@ -20,6 +20,7 @@ def load_module(path: Path, name: str):
 
 
 native_profile = load_module(ROOT / "ci" / "packizard_native_engine.py", "packizard_native_engine_test")
+worker_profile = load_module(ROOT / "ci" / "internal_worker_profile.py", "internal_worker_profile_test")
 single_profile = load_module(ROOT / "ci" / "single_executable_profile.py", "single_executable_profile_test")
 
 
@@ -73,34 +74,32 @@ class NativeEngineProfileTests(unittest.TestCase):
             )
             self.assertIn("Packizard Engine", completed.stdout)
 
-    def test_single_executable_profile_generates_onefile_windows_build(self):
+    def test_single_executable_profile_uses_packizard_helper_names(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            (root / "core").mkdir()
-            (root / "utils").mkdir()
-            (root / "gui").mkdir()
-            (root / "ampr_pack.spec").write_text(
-                'exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="ampr_pack", console=True)\n'
-                'coll = COLLECT(exe, a.binaries, a.datas, name="ampr_pack")\n',
-                encoding="utf-8",
-            )
-            (root / "ampr_pack_profile.spec").write_text(
-                'exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="ampr_pack_profile", console=True)\n'
-                'coll = COLLECT(exe, a.binaries, a.datas, name="ampr_pack_profile")\n',
-                encoding="utf-8",
-            )
+            for folder in ("core", "utils", "gui", "tests"):
+                (root / folder).mkdir()
             (root / "utils" / "tool_runner.py").write_text('ROOT = Path(sys.executable).resolve().parent\n', encoding="utf-8")
+            (root / "tests" / "test_cross_platform.py").write_text('', encoding="utf-8")
+            for name in ("build_windows.ps1", "build_linux.sh", "build_macos.sh"):
+                (root / name).write_text('ampr_pack.spec ampr_pack_profile.spec ampr_pack ampr_pack_profile\n', encoding="utf-8")
+            worker_profile.apply(root)
             single_profile.apply(root)
             main_spec = (root / "Packizard_Builder_OneFile.spec").read_text(encoding="utf-8")
             windows_build = (root / "build_windows.ps1").read_text(encoding="utf-8")
-            worker_spec = (root / "ampr_pack.spec").read_text(encoding="utf-8")
+            packer_spec = (root / "Packizard_Packer_Worker.spec").read_text(encoding="utf-8")
             runner = (root / "utils" / "tool_runner.py").read_text(encoding="utf-8")
             self.assertIn('name="Packizard-Builder"', main_spec)
-            self.assertNotIn("COLLECT(", main_spec)
+            self.assertIn("workers/Packizard-Packer-Worker", main_spec)
+            self.assertIn("workers/Packizard-Profile-Worker", main_spec)
+            self.assertNotIn("workers/ampr_pack", main_spec)
             self.assertIn("Packizard-Builder.exe", windows_build)
-            self.assertIn("Compress-Archive -LiteralPath $exe", windows_build)
-            self.assertNotIn("coll = COLLECT", worker_spec)
+            self.assertIn("Packizard_Packer_Worker.spec", windows_build)
+            self.assertIn("Packizard_Profile_Worker.spec", windows_build)
+            self.assertNotIn("coll = COLLECT", packer_spec)
             self.assertIn("_MEIPASS", runner)
+            self.assertFalse((root / "ampr_pack.spec").exists())
+            self.assertFalse((root / "ampr_pack_profile.spec").exists())
 
 
 if __name__ == "__main__":

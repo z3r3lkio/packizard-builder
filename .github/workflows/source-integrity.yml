@@ -24,7 +24,7 @@ jobs:
           test -f core/packizard_ps5_runtime.py
           test -f packizard_engine/packizard_lz4.py
           test -f packizard_engine/packizard_container.py
-          test -f packizard_engine/packizard_packer.py
+          test -f packizard_engine/packer.py
           test -f packizard_runtime/ps5/packizard_ps5_runtime/Makefile
           test -d packizard_runtime/ps5/packizard_ps5_runtime/src
           test -f resources/fakelib/libSceAmpr.sprx
@@ -40,9 +40,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if grep -R -I -n -E 'Lazy_AMPR|Lazy AMPR|Nazky/Lazy_AMPR' . --exclude-dir=.git --exclude='*.pyc'; then
+          retired_a="$(printf '\x4c\x61\x7a\x79\x5f\x41\x4d\x50\x52')"
+          retired_b="$(printf '\x4c\x61\x7a\x79\x20\x41\x4d\x50\x52')"
+          retired_c="$(printf '\x4e\x61\x7a\x6b\x79\x2f\x4c\x61\x7a\x79\x5f\x41\x4d\x50\x52')"
+          if grep -R -I -n -F -e "$retired_a" -e "$retired_b" -e "$retired_c" . --exclude-dir=.git --exclude='*.pyc'; then
             echo 'Retired application identity found in source tree.' >&2
             exit 1
           fi
+      - name: Reject legacy engine language in Linux product metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -E 'AMPR|LZ4' build_linux.sh
       - name: Compile first-party Python source
         run: python -m compileall -q main.py core gui packizard_engine scripts utils tests

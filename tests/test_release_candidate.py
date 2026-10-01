@@ -31,7 +31,7 @@ def _tree_snapshot(root: Path):
 
 class ReleaseCandidatePackTests(unittest.TestCase):
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp(prefix="lazy_ampr_rc_"))
+        self.root = Path(tempfile.mkdtemp(prefix="packizard_rc_"))
         self.source = self.root / "Game 🎮 テスト"
         self.source.mkdir()
         (self.source / "empty directory" / "nested empty").mkdir(parents=True)

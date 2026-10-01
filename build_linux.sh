@@ -84,8 +84,8 @@ cat > "$appdir/io.github.z3r3lkio.packizard-builder.desktop" << EOF_DESKTOP
 [Desktop Entry]
 Type=Application
 Name=Packizard Builder
-GenericName=Integrated PS5 AMPR and PKG builder
-Comment=Compress PS5 application data with AMPR and build PKG files with integrated LibProsperoPKG
+GenericName=Packizard Engine and PKG builder
+Comment=Compress PS5 application data with Packizard Engine and build PKG files with integrated LibProsperoPKG
 Exec=Packizard_Builder
 Icon=packizard-builder
 Categories=Utility;
@@ -102,8 +102,8 @@ cat > "$appdir/usr/share/metainfo/packizard-builder.appdata.xml" << EOF_META
 <component type="desktop-application">
   <id>packizard-builder</id>
   <name>Packizard Builder</name>
-  <summary>Integrated PS5 AMPR compressor and LibProsperoPKG builder</summary>
-  <description><p>Desktop interface for AMPR compression workflows and integrated LibProsperoPKG package creation.</p></description>
+  <summary>Integrated Packizard Engine compressor and LibProsperoPKG builder</summary>
+  <description><p>Desktop interface for Packizard Engine compression workflows and integrated LibProsperoPKG package creation.</p></description>
   <launchable type="desktop-id">io.github.z3r3lkio.packizard-builder.desktop</launchable>
   <url type="homepage">https://github.com/z3r3lkio/packizard-builder</url>
   <releases><release version="$version" date="$(date +%Y-%m-%d)"/></releases>
@@ -127,17 +127,17 @@ if [[ ! -x "$appimagetool" ]]; then
 fi
 if [[ -x "$appimagetool" ]]; then
     rm -rf -- "$appdir/usr/share/metainfo"
-mkdir -p -- "$appdir/usr/share/metainfo"
-cat > "$appdir/usr/share/metainfo/io.github.z3r3lkio.packizard-builder.appdata.xml" << EOF
+    mkdir -p -- "$appdir/usr/share/metainfo"
+    cat > "$appdir/usr/share/metainfo/io.github.z3r3lkio.packizard-builder.appdata.xml" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
   <id>io.github.z3r3lkio.packizard-builder</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
   <name>Packizard Builder</name>
-  <summary>Integrated PS5 AMPR/LZ4 compression and package workflow</summary>
+  <summary>Integrated Packizard Engine compression and package workflow</summary>
   <description>
-    <p>Packizard Builder provides an integrated desktop workflow for AMPR/LZ4 compression and package creation.</p>
+    <p>Packizard Builder provides an integrated desktop workflow for Packizard Engine compression and package creation.</p>
   </description>
   <developer id="io.github.z3r3lkio">
     <name>z3r3lkio</name>

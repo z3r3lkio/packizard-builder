@@ -67,7 +67,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -f packizard_engine/packizard_packer.py
+          test -f packizard_engine/packer.py
           test -f packizard_engine/packizard_container.py
           test -f packizard_engine/packizard_lz4.py
           test -f packizard_runtime/ps5/packizard_ps5_runtime/Makefile

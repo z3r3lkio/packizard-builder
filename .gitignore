@@ -8,8 +8,3 @@ release/
 *.zip
 pkg_bridge/
 vendor/LibProsperoPKG/
-resources/branding/packizard_icon.icns
-build-src/
-.review/
-ci/tests/**/bin/
-ci/tests/**/obj/

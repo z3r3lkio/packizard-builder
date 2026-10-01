@@ -1,0 +1,33 @@
+name: Verify Packizard source integrity
+
+on:
+  pull_request:
+    branches: [UAT, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-integrity:
+    name: Source integrity
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Verify first-party source layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f main.py
+          test -f Packizard_Builder.spec
+          test -f core/packizard_engine.py
+          test -f core/packizard_ps5_runtime.py
+          test -f native/packizard_lz4.py
+          test -f packizard_engine/packizard_container.py
+          test -f packizard_engine/packizard_packer.py
+          test -f ps5_runtime/src/packizard_runtime.c
+          test ! -e ci/bootstrap_source.py
+          test ! -e ci/bootstrap_source_impl.py
+          ! grep -Fq 'bootstrap_source.py' .github/workflows/package.yml
+      - name: Compile Python source
+        run: python -m compileall -q .

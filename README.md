@@ -23,7 +23,7 @@ Packizard tracks the latest **validated public upstream main snapshot** of:
 
 The pin is deliberate: a Golden Build must be reproducible. The reference GUI version and the public source version use different version schemes, so Packizard records them separately rather than pretending that `2.6.0` and `0.6.8` are the same release. A scheduled GitHub Actions workflow checks the upstream `main` branch and opens a `feature/libprospero-*` PR against `UAT` whenever its commit changes. The candidate snapshot is only promoted after the complete test/build matrix passes. This keeps Packizard on the newest public upstream code that has passed Packizard UAT without silently changing the package engine underneath an existing Golden Build.
 
-The authoritative pin used by the compact CI repository is `ci/libprospero_pin.json`. The reconstructed full source mirrors it into:
+The source pin is stored in:
 
 - `bridge/LIBPROSPERO_VERSION`
 - `bridge/LIBPROSPERO_REF`

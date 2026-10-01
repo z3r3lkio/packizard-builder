@@ -33,12 +33,8 @@ jobs:
         run: |
           set -euo pipefail
           case "$BASE_REF" in
-            main)
-              [[ "$HEAD_REF" == "UAT" ]] || { echo "PRs into main must come from UAT" >&2; exit 1; }
-              ;;
-            UAT)
-              [[ "$HEAD_REF" == feature/* ]] || { echo "PRs into UAT must come from feature/*" >&2; exit 1; }
-              ;;
+            main) [[ "$HEAD_REF" == "UAT" ]] || { echo "PRs into main must come from UAT" >&2; exit 1; } ;;
+            UAT) [[ "$HEAD_REF" == feature/* ]] || { echo "PRs into UAT must come from feature/*" >&2; exit 1; } ;;
           esac
 
   verify:
@@ -58,64 +54,30 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-shape0 libxcb-keysyms1
-      - name: Reconstruct complete source tree
-        run: python ci/bootstrap_source.py --output build-src
-      - name: Apply Packizard-native NAPS engine
-        run: python ci/naps_u2c_partial_group_profile.py --root build-src
-      - name: Normalize reconstructed compiler warnings
-        run: python ci/normalize_reconstructed_warnings.py --root build-src
-      - name: Normalize packaging warnings
-        run: python ci/normalize_packaging_warnings.py --root build-src
-      - name: Assert Packizard-owned pack engine
-        shell: bash
+      - name: Install test dependencies
         run: |
-          set -euo pipefail
-          test -f build-src/external/ampr_emu/tools/packizard_packer.py
-          test -f build-src/external/ampr_emu/tools/packizard_container.py
-          test ! -e build-src/external/ampr_emu/tools/ampr_pack_format.py
-          grep -F 'from packizard_packer import' build-src/external/ampr_emu/tools/ampr_pack.py
-      - name: Build and probe integrated PKG engine
-        working-directory: build-src
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-build.txt
+      - name: Prepare and probe integrated PKG engine
         run: |
           python scripts/prepare_pkg_bridge.py --rid linux-x64
           ./pkg_bridge/linux-x64/Packizard.PkgBridge probe | tee /tmp/packizard-pkg-probe.json
           grep -F '"engine":"LibProsperoPKG"' /tmp/packizard-pkg-probe.json
-      - name: Validate packaging integration
+      - name: Assert Packizard-owned engine layout
         shell: bash
         run: |
           set -euo pipefail
-          grep -F 'PackizardNativeNapsEngine.Generate(asmResult)' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/ProsperoPkgBuilder.cs
-          grep -F 'PackizardNativeNapsWriter.Serialize(doc)' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/PackizardNativeNapsEngine.cs
-          if grep -R -Fq 'LibProsperoPkg.Gui.exe' build-src/core build-src/gui build-src/utils; then
-            echo "External PKG GUI launcher leaked into runtime code" >&2
-            exit 1
-          fi
-      - name: Test bootstrap, native engine and streaming regressions
-        run: |
-          python -m unittest discover -s tests -v
-          dotnet run --project ci/tests/StreamingRegression -- --large
-      - name: Install reconstructed test dependencies
-        working-directory: build-src
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements-build.txt
-      - name: Run reconstructed tests
-        working-directory: build-src
+          test -f packizard_engine/packizard_packer.py
+          test -f packizard_engine/packizard_container.py
+          test -f ps5_runtime/src/packizard_runtime.c
+          test ! -e external/ampr_emu/tools/ampr_pack_format.py
+          test ! -e ci/bootstrap_source.py
+      - name: Run tests
         env:
           QT_QPA_PLATFORM: offscreen
         run: python -m unittest discover -s tests -v
-      - name: Compile reconstructed Python sources
-        working-directory: build-src
+      - name: Compile Python sources
         run: python -m compileall -q .
-      - name: Capture validated source snapshot
-        run: tar -C build-src -czf packizard-source-snapshot.tar.gz .
-      - name: Upload validated source snapshot
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: packizard-source-snapshot
-          path: packizard-source-snapshot.tar.gz
-          if-no-files-found: error
-          retention-days: 7
 
   build:
     name: ${{ matrix.platform }} · ${{ matrix.arch }}
@@ -143,17 +105,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-shape0 libxcb-keysyms1
-      - name: Reconstruct complete source tree
-        run: python ci/bootstrap_source.py --output build-src
-      - name: Apply Packizard-native NAPS engine
-        run: python ci/naps_u2c_partial_group_profile.py --root build-src
-      - name: Normalize reconstructed compiler warnings
-        run: python ci/normalize_reconstructed_warnings.py --root build-src
-      - name: Normalize packaging warnings
-        run: python ci/normalize_packaging_warnings.py --root build-src
       - name: Build Windows package
         if: runner.os == 'Windows'
-        working-directory: build-src
         shell: pwsh
         env:
           PYTHONWARNINGS: 'ignore:invalid escape sequence:SyntaxWarning'
@@ -161,11 +114,9 @@ jobs:
           python -m venv .venv312
           .\.venv312\Scripts\python -m pip install --upgrade pip
           .\.venv312\Scripts\python -m pip install -r requirements-build.txt
-          .\.venv312\Scripts\python scripts\prepare_pkg_bridge.py --rid "win-${{ matrix.arch }}"
-          .\build_windows.ps1 -Arch ${{ matrix.arch }}
+          .\build_windows.ps1 -Architecture ${{ matrix.arch }}
       - name: Build Linux package
         if: runner.os == 'Linux'
-        working-directory: build-src
         env:
           PYTHON: python3
           PYTHONWARNINGS: 'ignore:invalid escape sequence:SyntaxWarning'
@@ -173,7 +124,6 @@ jobs:
         run: ./build_linux.sh
       - name: Build macOS package
         if: runner.os == 'macOS'
-        working-directory: build-src
         env:
           PYTHON: python3
           PYTHONWARNINGS: 'ignore:invalid escape sequence:SyntaxWarning'

@@ -126,7 +126,7 @@ class MainWindow(QMainWindow):
         self.log_toggle.toggled.connect(self._toggle_console)
         sb.addWidget(self.log_toggle)
 
-        foot = QLabel("Packizard · AMPR + LibProsperoPKG")
+        foot = QLabel("Packizard Builder")
         foot.setObjectName("SideFoot")
         foot.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         sb.addWidget(foot)
@@ -459,7 +459,7 @@ class MainWindow(QMainWindow):
                 if engine is None:
                     raise PkgEngineError("The integrated PKG engine is not present in this Packizard build.")
                 if engine.keys_available is False:
-                    raise PkgEngineError("LibProsperoPKG reports that required package key material is unavailable.")
+                    raise PkgEngineError("The integrated PKG engine does not have the required package key material.")
             except PkgEngineError as exc:
                 QMessageBox.warning(self, "Cannot build PKG", str(exc))
                 return

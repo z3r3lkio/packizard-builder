@@ -20,6 +20,8 @@ AUTH_ENTRY_NAMES = {
     0x0080: "general-digests",
 }
 PFS_PREFIX_SIZE = 0x40000
+PFS_GEOMETRY_WINDOW = 0x80000
+PFS_TAIL_SIZE = 0x200000
 MAX_AUTH_ENTRY_SIZE = 0x100000
 ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 
@@ -50,6 +52,17 @@ def _write_member(archive: zipfile.ZipFile, name: str, data: bytes) -> dict[str,
     return {"name": name, "size": len(data), "sha256": _sha256(data)}
 
 
+def _bounded_window(start: int, center: int, end: int, size: int) -> tuple[int, int] | None:
+    if center < start or center >= end or size <= 0:
+        return None
+    half = size // 2
+    window_start = max(start, center - half)
+    window_end = min(end, window_start + size)
+    if window_end - window_start < size:
+        window_start = max(start, window_end - size)
+    return window_start, max(0, window_end - window_start)
+
+
 def export_bundle(package: str | Path, output: str | Path) -> Path:
     pkg = Path(package).expanduser().resolve()
     target = Path(output).expanduser().resolve()
@@ -59,12 +72,74 @@ def export_bundle(package: str | Path, output: str | Path) -> Path:
     report_data["path"] = pkg.name
 
     members: list[tuple[str, bytes]] = []
+    ranges: list[dict[str, object]] = []
+
+    def add_range(name: str, offset: int, size: int, purpose: str) -> None:
+        if size <= 0:
+            return
+        members.append((name, _read_range(pkg, offset, size)))
+        ranges.append(
+            {
+                "name": name,
+                "offset": offset,
+                "offset_hex": f"0x{offset:x}",
+                "size": size,
+                "size_hex": f"0x{size:x}",
+                "purpose": purpose,
+            }
+        )
+
     members.append(("report.json", (json.dumps(report_data, indent=2, sort_keys=True) + "\n").encode("utf-8")))
     members.append(("fih.bin", _read_range(pkg, 0, FIH_HEADER_SIZE)))
 
     pfs_prefix = min(report.pfs_size, PFS_PREFIX_SIZE)
     if pfs_prefix:
-        members.append(("pfs-head.bin", _read_range(pkg, report.pfs_offset, pfs_prefix)))
+        add_range("pfs-head.bin", report.pfs_offset, pfs_prefix, "Start of the FIH pfs_image region")
+
+    # FIH+0x20 points at the physical image location used by the console image-check path.
+    # Export a bounded window around it so direct data-first images can be distinguished from
+    # an outer-PFS wrapper without sharing the package payload.
+    fih = _read_range(pkg, 0, FIH_HEADER_SIZE)
+    fih_0x20 = int.from_bytes(fih[0x20:0x28], "little")
+    window = _bounded_window(
+        report.pfs_offset,
+        fih_0x20,
+        report.embedded_cnt_offset,
+        PFS_GEOMETRY_WINDOW,
+    )
+    if window:
+        add_range(
+            "pfs-fih-0x20-window.bin",
+            window[0],
+            window[1],
+            "Physical image window around the offset stored at FIH+0x20",
+        )
+
+    # FIH+0x90 is a block-count/geometry field whose relationship with the physical metadata
+    # tail differs between the known-good direct image and Packizard's former outer-PFS wrapper.
+    field_0x90_offset = report.pfs_offset + report.inner_image_block_count * report.block_size_field
+    window = _bounded_window(
+        report.pfs_offset,
+        field_0x90_offset,
+        report.embedded_cnt_offset,
+        PFS_GEOMETRY_WINDOW,
+    )
+    if window:
+        add_range(
+            "pfs-fih-0x90-window.bin",
+            window[0],
+            window[1],
+            "Physical image window at pfs_offset + FIH[0x90] * block_size",
+        )
+
+    pfs_tail = min(report.pfs_size, PFS_TAIL_SIZE)
+    if pfs_tail:
+        add_range(
+            "pfs-tail.bin",
+            report.embedded_cnt_offset - pfs_tail,
+            pfs_tail,
+            "Tail of the FIH pfs_image region immediately before the embedded CNT",
+        )
 
     members.append(("cnt-header.bin", _read_range(pkg, report.embedded_cnt_offset, CNT_HEADER_SIZE)))
 
@@ -94,6 +169,8 @@ def export_bundle(package: str | Path, output: str | Path) -> Path:
         absolute = report.embedded_cnt_offset + entry.data_offset
         members.append((f"auth-{label}-0x{entry.id:04x}.bin", _read_range(pkg, absolute, entry.data_size)))
 
+    members.append(("ranges.json", (json.dumps(ranges, indent=2, sort_keys=True) + "\n").encode("utf-8")))
+
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
         target.unlink()
@@ -103,12 +180,12 @@ def export_bundle(package: str | Path, output: str | Path) -> Path:
         for name, data in members:
             manifest_files.append(_write_member(archive, name, data))
         manifest = {
-            "format": "Packizard PKG diagnostic bundle v1",
+            "format": "Packizard PKG diagnostic bundle v2",
             "source_name": pkg.name,
             "source_size": pkg.stat().st_size,
             "files": manifest_files,
             "omitted": omitted,
-            "privacy": "Contains package/container metadata and selected authentication entries; game payload files are not exported.",
+            "privacy": "Contains bounded package/container metadata, image-geometry windows and selected authentication entries; complete game payload files are not exported.",
         }
         _write_member(
             archive,

@@ -55,6 +55,7 @@ def _patch_build_diagnostics_test(root: Path) -> None:
     text = path.read_text(encoding="utf-8")
     text = text.replace("worker_ampr_pack.py", "worker_packizard_packer.py")
     text = text.replace("worker_ampr_pack_profile.py", "worker_packizard_profile.py")
+    text = text.replace("{'ampr_pack': command}", "{'packizard_packer': command}")
     path.write_text(text, encoding="utf-8", newline="\n")
 
 

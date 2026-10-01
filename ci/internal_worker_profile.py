@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 from pathlib import Path
 
 PACK_ENTRY = '''"""Frozen Packizard packer entry point."""\nimport sys\nfrom packizard_engine.packer import main\nif __name__ == "__main__":\n    for stream in (sys.stdout, sys.stderr):\n        if stream is not None:\n            stream.reconfigure(encoding="utf-8")\n    raise SystemExit(main())\n'''
@@ -33,9 +34,19 @@ def _patch_build_scripts(root: Path) -> int:
     return changed
 
 
+def _make_engine_scripts_self_contained(root: Path) -> None:
+    engine = root / "packizard_engine"
+    container = engine / "container.py"
+    codec = engine / "lz4.py"
+    if not container.is_file() or not codec.is_file():
+        raise RuntimeError("Packizard engine must be installed before worker identities are configured")
+    shutil.copy2(container, engine / "packizard_container.py")
+    shutil.copy2(codec, engine / "packizard_lz4.py")
+
+
 def _write_tool_runner(root: Path) -> None:
     path = root / "utils" / "tool_runner.py"
-    path.write_text('''"""Resolve Packizard engine helpers in source and frozen builds."""\n\nimport sys\nfrom pathlib import Path\n\n_WORKERS = {\n    "packer": "Packizard-Packer-Worker",\n    "profile": "Packizard-Profile-Worker",\n}\n\ndef command_for(script: Path) -> list[str]:\n    script = Path(script)\n    worker_name = _WORKERS.get(script.stem)\n    if getattr(sys, "frozen", False):\n        if worker_name is None:\n            raise FileNotFoundError(f"Unknown Packizard helper: {script.stem}")\n        suffix = ".exe" if sys.platform == "win32" else ""\n        root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))\n        worker = root / "workers" / worker_name / f"{worker_name}{suffix}"\n        if not worker.is_file():\n            raise FileNotFoundError(f"Bundled Packizard helper not found: {worker}")\n        return [str(worker)]\n    if worker_name is not None:\n        return [sys.executable, "-m", f"packizard_engine.{script.stem}"]\n    return [sys.executable, str(script)]\n''', encoding="utf-8", newline="\n")
+    path.write_text('''"""Resolve Packizard engine helpers in source and frozen builds."""\n\nimport sys\nfrom pathlib import Path\n\n_WORKERS = {\n    "packer": "Packizard-Packer-Worker",\n    "profile": "Packizard-Profile-Worker",\n}\n\ndef command_for(script: Path) -> list[str]:\n    script = Path(script)\n    worker_name = _WORKERS.get(script.stem)\n    if getattr(sys, "frozen", False):\n        if worker_name is None:\n            raise FileNotFoundError(f"Unknown Packizard helper: {script.stem}")\n        suffix = ".exe" if sys.platform == "win32" else ""\n        root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))\n        worker = root / "workers" / worker_name / f"{worker_name}{suffix}"\n        if not worker.is_file():\n            raise FileNotFoundError(f"Bundled Packizard helper not found: {worker}")\n        return [str(worker)]\n    return [sys.executable, str(script)]\n''', encoding="utf-8", newline="\n")
 
 
 def _patch_cross_platform_test(root: Path) -> None:
@@ -48,8 +59,8 @@ def _patch_cross_platform_test(root: Path) -> None:
     text = text.replace('"workers" / "ampr_pack" / "ampr_pack"', '"workers" / "Packizard-Packer-Worker" / "Packizard-Packer-Worker"')
     text = text.replace('"workers" / "ampr_pack" / "ampr_pack.exe"', '"workers" / "Packizard-Packer-Worker" / "Packizard-Packer-Worker.exe"')
     text = text.replace(
-        'tool_runner.command_for(script), [sys.executable, str(script)]',
         'tool_runner.command_for(script), [sys.executable, "-m", "packizard_engine.packer"]',
+        'tool_runner.command_for(script), [sys.executable, str(script)]',
     )
     path.write_text(text, encoding="utf-8", newline="\n")
 
@@ -68,6 +79,7 @@ def _patch_build_diagnostics_test(root: Path) -> None:
 
 def apply(root: Path) -> None:
     root = Path(root)
+    _make_engine_scripts_self_contained(root)
     (root / "worker_packizard_packer.py").write_text(PACK_ENTRY, encoding="utf-8", newline="\n")
     (root / "worker_packizard_profile.py").write_text(PROFILE_ENTRY, encoding="utf-8", newline="\n")
     (root / "Packizard_Packer_Worker.spec").write_text(

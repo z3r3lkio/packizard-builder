@@ -1,0 +1,108 @@
+name: Build ShadowMountPlus exlz
+
+on:
+  push:
+    branches:
+      - build-shadowmount-exlz
+    paths:
+      - ".github/workflows/build-shadowmount-exlz.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout ShadowMountPlus 1.7
+        uses: actions/checkout@v4
+        with:
+          repository: drakmor/ShadowMountPlus
+          ref: "1.7"
+          path: ShadowMountPlus
+          fetch-depth: 0
+
+      - name: Add .exlz alias for exFAT
+        working-directory: ShadowMountPlus
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/sm_image.c')
+          s = p.read_text()
+          old = '  if (strcasecmp(dot, ".exfat") == 0)\n    return IMAGE_FS_EXFAT;'
+          new = '  if (strcasecmp(dot, ".exfat") == 0 ||\n      strcasecmp(dot, ".exlz") == 0)\n    return IMAGE_FS_EXFAT;'
+          if old not in s:
+              raise SystemExit('Expected .exfat detector not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          grep -n -A4 -B2 'exlz' src/sm_image.c
+
+      - name: Checkout pacbrew-repo
+        uses: actions/checkout@v4
+        with:
+          repository: ps5-payload-dev/pacbrew-repo
+          path: pacbrew-repo
+
+      - name: Checkout SDK stubs
+        uses: actions/checkout@v4
+        with:
+          repository: ps5-payload-dev/sdk
+          path: ps5-sdk
+
+      - name: Setup build environment
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            autoconf \
+            automake \
+            build-essential \
+            clang-18 \
+            cmake \
+            curl \
+            git \
+            libarchive-tools \
+            libtool \
+            lld-18 \
+            makepkg \
+            meson \
+            pacman-package-manager \
+            pkg-config \
+            python3 \
+            python3-yaml \
+            xxd \
+            zip
+
+      - name: Build and install PS5 payload SDK
+        working-directory: pacbrew-repo/sdk
+        run: |
+          makepkg -c -f
+          sudo pacman --noconfirm -U ./ps5-payload-*.pkg.tar.gz
+
+      - name: Build and install dependencies
+        shell: bash
+        run: |
+          set -e
+          for pkg in openlibm json-c zlib libpng libmicrohttpd sqlite; do
+            pushd "pacbrew-repo/$pkg"
+            makepkg -c -f
+            sudo pacman --noconfirm -U ./ps5-payload-*.pkg.tar.gz
+            popd
+          done
+
+      - name: Build ShadowMountPlus ELF
+        working-directory: ShadowMountPlus
+        run: |
+          make clean all PS5_SCE_STUBS_DIR="$GITHUB_WORKSPACE/ps5-sdk/sce_stubs"
+          file shadowmountplus.elf
+          sha256sum shadowmountplus.elf > shadowmountplus.elf.sha256
+
+      - name: Upload ELF
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadowmountplus-exlz-elf
+          path: |
+            ShadowMountPlus/shadowmountplus.elf
+            ShadowMountPlus/shadowmountplus.elf.sha256
+          if-no-files-found: error

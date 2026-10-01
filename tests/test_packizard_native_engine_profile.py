@@ -7,7 +7,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -50,27 +49,29 @@ class NativeEngineProfileTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 native_profile.assert_product_references_are_clean(root)
 
-    def test_codec_is_installed_with_standalone_worker_imports(self):
+    def test_native_packer_replaces_inherited_format_module(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             tools = root / "external" / "ampr_emu" / "tools"
             tools.mkdir(parents=True)
-            (tools / "ampr_pack_format.py").write_text(
-                "class Lz4Codec:\n    pass\n",
-                encoding="utf-8",
-            )
-            native_profile.install_codec(ROOT, root)
+            (tools / "ampr_pack.py").write_text("# inherited implementation\n", encoding="utf-8")
+            (tools / "ampr_pack_format.py").write_text("# inherited format\n", encoding="utf-8")
+            native_profile.install_engine(ROOT, root)
+            native_profile.assert_packizard_packer_is_native(root)
             self.assertTrue((tools / "packizard_lz4.py").is_file())
-            text = (tools / "ampr_pack_format.py").read_text(encoding="utf-8")
-            self.assertIn("from packizard_lz4 import PackizardLz4Codec as Lz4Codec", text)
+            self.assertTrue((tools / "packizard_container.py").is_file())
+            self.assertTrue((tools / "packizard_packer.py").is_file())
+            self.assertFalse((tools / "ampr_pack_format.py").exists())
+            wrapper = (tools / "ampr_pack.py").read_text(encoding="utf-8")
+            self.assertIn("from packizard_packer import", wrapper)
             completed = subprocess.run(
-                [sys.executable, "-c", "import ampr_pack_format; print(ampr_pack_format.Lz4Codec.__name__)"],
+                [sys.executable, "-c", "import packizard_packer; print(packizard_packer.VERSION)"],
                 cwd=tools,
                 capture_output=True,
                 text=True,
                 check=True,
             )
-            self.assertEqual(completed.stdout.strip(), "PackizardLz4Codec")
+            self.assertIn("Packizard Engine", completed.stdout)
 
     def test_single_executable_profile_generates_onefile_windows_build(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -88,17 +89,12 @@ class NativeEngineProfileTests(unittest.TestCase):
                 'coll = COLLECT(exe, a.binaries, a.datas, name="ampr_pack_profile")\n',
                 encoding="utf-8",
             )
-            (root / "utils" / "tool_runner.py").write_text(
-                'ROOT = Path(sys.executable).resolve().parent\n', encoding="utf-8"
-            )
-
+            (root / "utils" / "tool_runner.py").write_text('ROOT = Path(sys.executable).resolve().parent\n', encoding="utf-8")
             single_profile.apply(root)
-
             main_spec = (root / "Packizard_Builder_OneFile.spec").read_text(encoding="utf-8")
             windows_build = (root / "build_windows.ps1").read_text(encoding="utf-8")
             worker_spec = (root / "ampr_pack.spec").read_text(encoding="utf-8")
             runner = (root / "utils" / "tool_runner.py").read_text(encoding="utf-8")
-
             self.assertIn('name="Packizard-Builder"', main_spec)
             self.assertNotIn("COLLECT(", main_spec)
             self.assertIn("Packizard-Builder.exe", windows_build)

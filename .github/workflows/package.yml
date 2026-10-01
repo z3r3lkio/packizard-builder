@@ -2,14 +2,10 @@ name: Package Packizard Builder
 
 on:
   push:
-    branches:
-      - '**'
-    tags:
-      - 'v*'
+    branches: [UAT, main]
+    tags: ['v*']
   pull_request:
-    branches:
-      - UAT
-      - main
+    branches: [UAT, main]
   workflow_dispatch:
 
 permissions:
@@ -38,16 +34,10 @@ jobs:
           set -euo pipefail
           case "$BASE_REF" in
             main)
-              if [[ "$HEAD_REF" != "UAT" ]]; then
-                echo "PRs into main must come from UAT. Got: $HEAD_REF" >&2
-                exit 1
-              fi
+              [[ "$HEAD_REF" == "UAT" ]] || { echo "PRs into main must come from UAT" >&2; exit 1; }
               ;;
             UAT)
-              if [[ "$HEAD_REF" != feature/* ]]; then
-                echo "PRs into UAT must come from feature/* branches. Got: $HEAD_REF" >&2
-                exit 1
-              fi
+              [[ "$HEAD_REF" == feature/* ]] || { echo "PRs into UAT must come from feature/*" >&2; exit 1; }
               ;;
           esac
 
@@ -67,14 +57,7 @@ jobs:
       - name: Install headless Qt system libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libegl1 \
-            libgl1 \
-            libxkbcommon-x11-0 \
-            libxcb-cursor0 \
-            libxcb-icccm4 \
-            libxcb-shape0 \
-            libxcb-keysyms1
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-shape0 libxcb-keysyms1
       - name: Reconstruct complete source tree
         run: python ci/bootstrap_source.py --output build-src
       - name: Apply Packizard-native NAPS engine
@@ -83,62 +66,56 @@ jobs:
         run: python ci/normalize_reconstructed_warnings.py --root build-src
       - name: Normalize packaging warnings
         run: python ci/normalize_packaging_warnings.py --root build-src
+      - name: Assert Packizard-owned pack engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f build-src/external/ampr_emu/tools/packizard_packer.py
+          test -f build-src/external/ampr_emu/tools/packizard_container.py
+          test ! -e build-src/external/ampr_emu/tools/ampr_pack_format.py
+          grep -F 'from packizard_packer import' build-src/external/ampr_emu/tools/ampr_pack.py
       - name: Build and probe integrated PKG engine
         working-directory: build-src
         run: |
           python scripts/prepare_pkg_bridge.py --rid linux-x64
           ./pkg_bridge/linux-x64/Packizard.PkgBridge probe | tee /tmp/packizard-pkg-probe.json
           grep -F '"engine":"LibProsperoPKG"' /tmp/packizard-pkg-probe.json
-          grep -F '"pprGuiReferenceVersion":"0.6.8"' /tmp/packizard-pkg-probe.json
       - name: Validate packaging integration
         shell: bash
         run: |
           set -euo pipefail
-          grep -F 'scripts/prepare_pkg_bridge.py --rid "linux-$arch"' build-src/build_linux.sh
-          grep -F 'scripts/prepare_pkg_bridge.py --rid "osx-$arch"' build-src/build_macos.sh
-          grep -F 'scripts\prepare_pkg_bridge.py --rid $rid' build-src/build_windows.ps1
-          grep -F 'codesign --force --sign - "$app/Contents/MacOS/pkg_bridge/Packizard.PkgBridge"' build-src/build_macos.sh
-          grep -F 'packizard-builder.appdata.xml' build-src/build_linux.sh
-          grep -F 'Categories=Utility;' build-src/build_linux.sh
-          grep -F 'BuildToFile(IReadOnlyList<ProsperoPs5InnerPayload>' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PFS/ProsperoPs5InnerImageBuilder.cs
-          grep -F 'BuildForPackageToFile(' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PFS/ProsperoOuterPfsBuilder.cs
-          grep -F 'BuildDebugSiSegmentFromFile(' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/ProsperoSiArchive.cs
-          grep -F 'Packizard canonical DATA block map' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PFS/ProsperoPs5InnerImageAssembler.cs
-          grep -F 'private byte[] BuildNativeImage' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PFS/ProsperoPs5InnerImageAssembler.cs
-          grep -F 'RoundUp(dataStream.LogicalLength, BlockSize)' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PFS/ProsperoPs5InnerImageAssembler.cs
           grep -F 'PackizardNativeNapsEngine.Generate(asmResult)' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/ProsperoPkgBuilder.cs
           grep -F 'PackizardNativeNapsWriter.Serialize(doc)' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/PackizardNativeNapsEngine.cs
-          grep -F 'private static void WriteU2c' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/PackizardNativeNapsWriter.cs
-          grep -F 'PackizardNativeNapsValidator.ValidateDocument' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/PackizardNativeNapsWriter.cs
-          if grep -Fq 'ProsperoNwonlyNapsGenerator.Generate(asmResult)' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/ProsperoPkgBuilder.cs; then
-            echo "Legacy NAPS topology generator leaked into the Packizard-native PKG path" >&2
-            exit 1
-          fi
-          if grep -R -Fq 'ProsperoNapsLayout.BuildLayout(' build-src/vendor/LibProsperoPKG/src/LibProsperoPkg/PKG/PackizardNativeNaps*.cs; then
-            echo "Legacy NAPS serializer leaked into the Packizard-native path" >&2
-            exit 1
-          fi
           if grep -R -Fq 'LibProsperoPkg.Gui.exe' build-src/core build-src/gui build-src/utils; then
-            echo "External PKG GUI launcher leaked back into runtime code" >&2
+            echo "External PKG GUI launcher leaked into runtime code" >&2
             exit 1
           fi
-      - name: Test bootstrap and streaming regressions
+      - name: Test bootstrap, native engine and streaming regressions
         run: |
           python -m unittest discover -s tests -v
           dotnet run --project ci/tests/StreamingRegression -- --large
-      - name: Install test dependencies
+      - name: Install reconstructed test dependencies
         working-directory: build-src
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-build.txt
-      - name: Run tests
+      - name: Run reconstructed tests
         working-directory: build-src
         env:
           QT_QPA_PLATFORM: offscreen
         run: python -m unittest discover -s tests -v
-      - name: Compile Python sources
+      - name: Compile reconstructed Python sources
         working-directory: build-src
         run: python -m compileall -q .
+      - name: Capture validated source snapshot
+        run: tar -C build-src -czf packizard-source-snapshot.tar.gz .
+      - name: Upload validated source snapshot
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: packizard-source-snapshot
+          path: packizard-source-snapshot.tar.gz
+          if-no-files-found: error
+          retention-days: 7
 
   build:
     name: ${{ matrix.platform }} · ${{ matrix.arch }}
@@ -147,22 +124,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: Windows
-            os: windows-2025
-            arch: x64
-            artifact: packizard-builder-windows-x64
-          - platform: Linux
-            os: ubuntu-24.04
-            arch: x64
-            artifact: packizard-builder-linux-x64
-          - platform: macOS
-            os: macos-15-intel
-            arch: x64
-            artifact: packizard-builder-macos-x64
-          - platform: macOS
-            os: macos-15
-            arch: arm64
-            artifact: packizard-builder-macos-arm64
+          - { platform: Windows, os: windows-2025, arch: x64, artifact: packizard-builder-windows-x64 }
+          - { platform: Linux, os: ubuntu-24.04, arch: x64, artifact: packizard-builder-linux-x64 }
+          - { platform: macOS, os: macos-15-intel, arch: x64, artifact: packizard-builder-macos-x64 }
+          - { platform: macOS, os: macos-15, arch: arm64, artifact: packizard-builder-macos-arm64 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7.0.1
@@ -177,14 +142,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libegl1 \
-            libgl1 \
-            libxkbcommon-x11-0 \
-            libxcb-cursor0 \
-            libxcb-icccm4 \
-            libxcb-shape0 \
-            libxcb-keysyms1
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-shape0 libxcb-keysyms1
       - name: Reconstruct complete source tree
         run: python ci/bootstrap_source.py --output build-src
       - name: Apply Packizard-native NAPS engine

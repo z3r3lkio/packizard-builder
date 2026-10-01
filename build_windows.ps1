@@ -43,7 +43,27 @@ try {
     if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw "One-file Packizard executable not produced: $exe" }
     if (Test-Path -LiteralPath (Join-Path $dist "Packizard_Builder")) { throw "Sidecar Packizard_Builder directory was produced unexpectedly" }
 
+    # Workers are build-time inputs for the one-file executable. Once embedded,
+    # remove their standalone build outputs so dist represents the release shape.
+    Get-ChildItem -LiteralPath $dist -Force | Where-Object { $_.FullName -ne $exe } | Remove-Item -Recurse -Force
+    $remaining = @(Get-ChildItem -LiteralPath $dist -Force)
+    if ($remaining.Count -ne 1 -or $remaining[0].FullName -ne $exe) {
+        throw "Windows dist must contain only Packizard-Builder.exe after embedding workers and bridge"
+    }
+
     Compress-Archive -LiteralPath $exe -DestinationPath $archive -Force
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = [System.IO.Compression.ZipFile]::OpenRead($archive)
+    try {
+        $entries = @($zip.Entries | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Name) })
+        if ($entries.Count -ne 1 -or $entries[0].Name -ne "Packizard-Builder.exe") {
+            throw "Windows release archive must contain exactly Packizard-Builder.exe; found: $($entries.FullName -join ', ')"
+        }
+    }
+    finally {
+        $zip.Dispose()
+    }
+
     $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
     Set-Content -LiteralPath (Join-Path $releaseRoot "SHA256SUMS-Windows-$Architecture.txt") -Value "$hash *$(Split-Path -Leaf $archive)" -Encoding ascii
     Write-Host "Built one-file executable $exe"

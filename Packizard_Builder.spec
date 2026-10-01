@@ -20,19 +20,24 @@ def add_tree(root: Path, destination: str):
     return entries
 
 
+runtime_source = project / "packizard_runtime" / "ps5" / "packizard_ps5_runtime"
+runtime_license = runtime_source / "LICENSE"
+runtime_binary = project / "resources" / "fakelib" / "libSceAmpr.sprx"
+if not runtime_binary.is_file():
+    raise RuntimeError(f"Bundled Packizard PS5 Runtime is missing: {runtime_binary}")
+if not runtime_license.is_file():
+    raise RuntimeError(f"Packizard PS5 Runtime license is missing: {runtime_license}")
+
 datas = [
-    ("resources/fakelib/libSceAmpr.sprx", "resources/fakelib"),
+    (str(runtime_binary), "resources/fakelib"),
+    ("resources/fakelib/PACKIZARD_RUNTIME_SOURCE.txt", "resources/fakelib"),
     ("toml_profiles", "toml_profiles"),
     ("THIRD_PARTY_NOTICES.md", "."),
+    (str(runtime_license), "licenses/packizard-runtime-compat"),
 ]
 branding = project / "resources" / "branding"
 if branding.exists():
     datas.append((str(branding), "resources/branding"))
-
-if (project / "external" / "ampr_emu" / "LICENSE").is_file():
-    datas.append(("external/ampr_emu/LICENSE", "licenses/ampr_emu"))
-if (project / "external" / "ampr_emu" / "third_party" / "lz4" / "LICENSE").is_file():
-    datas.append(("external/ampr_emu/third_party/lz4/LICENSE", "licenses/lz4"))
 
 if is_windows:
     dist = Path(DISTPATH)

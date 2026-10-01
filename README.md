@@ -4,13 +4,15 @@ Packizard Builder is a self-contained desktop workflow for PS5 application backu
 
 ## Architecture
 
-Packizard now builds directly from source stored in this repository. The build no longer reconstructs the application from another project or applies an overlay at CI time.
+Packizard builds directly from source stored in this repository. The build no longer reconstructs the application from another project, clones an application baseline or applies an overlay at CI time.
 
 The application is split into three first-class components:
 
 - **Packizard Engine** — scanning, profiling, packing, container/index handling and verification.
-- **Packizard PS5 Runtime** — the runtime implementation used to read Packizard-packed assets on the target system.
+- **Packizard PS5 Runtime** — the in-repository runtime integration used to read Packizard-packed assets on the target system. The compatibility ABI filename `libSceAmpr.sprx` is retained because games expect that name.
 - **Packizard PKG integration** — the first-party `Packizard.PkgBridge` wrapper around the pinned LibProsperoPKG source snapshot.
+
+The legacy duplicate `external/ampr_emu` tree is not required by the build. Runtime compatibility source lives under `packizard_runtime/ps5/packizard_ps5_runtime`, and Packizard Engine source lives under `packizard_engine`.
 
 Windows releases are built as a single `Packizard-Builder.exe`. Worker programs, runtime resources and the PKG bridge are embedded in the executable and extracted only into PyInstaller's private runtime directory when required.
 
@@ -36,10 +38,7 @@ Packizard integrates **LibProsperoPKG v2.6.0** through `Packizard.PkgBridge`.
 
 The GUI application is not launched or bundled. PKG work is performed by the Packizard bridge against the pinned public library source. The pin is upgraded only after the candidate revision passes Packizard UAT and the complete build matrix.
 
-The source pin is stored in:
-
-- `bridge/LIBPROSPERO_VERSION`
-- `bridge/LIBPROSPERO_REF`
+The source pin is stored in `bridge/LIBPROSPERO_VERSION` and `bridge/LIBPROSPERO_REF`.
 
 ## Development prerequisites
 
@@ -47,8 +46,16 @@ The source pin is stored in:
 - dependencies from `requirements-build.txt`
 - .NET 10 SDK
 - Git, used to fetch the pinned LibProsperoPKG source for bridge builds
+- `PS5_PAYLOAD_SDK` only when rebuilding the target-side Packizard PS5 Runtime from source
 
-Prepare the bridge manually when needed:
+Rebuild the PS5 runtime when required:
+
+```bash
+cd packizard_runtime/ps5/packizard_ps5_runtime
+PS5_PAYLOAD_SDK=/path/to/ps5-payload-sdk ./build_packizard_runtime.sh
+```
+
+Prepare the PKG bridge manually when needed:
 
 ```bash
 python scripts/prepare_pkg_bridge.py --rid linux-x64
@@ -73,11 +80,12 @@ Linux and macOS use `build_linux.sh` and `build_macos.sh` respectively.
 ## Tests
 
 ```bash
+python scripts/validate_packizard_runtime.py
 python -m unittest discover -s tests -v
-python -m compileall -q .
+python -m compileall -q main.py core gui packizard_engine scripts utils tests
 ```
 
-CI also compiles and probes `Packizard.PkgBridge` and builds the platform release matrix before a Golden Build can pass.
+CI compiles and probes `Packizard.PkgBridge`, validates the bundled Packizard PS5 Runtime contract and builds the platform release matrix before a Golden Build can pass.
 
 ## Branch and release policy
 
@@ -89,10 +97,4 @@ feature/* -> PR -> UAT -> Golden Build -> PR -> main
 
 ## Third-party components
 
-Packizard retains the licenses and notices for third-party components that remain part of the source or release build, including:
-
-- AMPR-compatible runtime/tooling components from `drakmor/ampr_emu` where still retained for compatibility;
-- Auto-Backpork tooling and its upstream dependencies;
-- LibProsperoPKG by SvenGDK.
-
-See `THIRD_PARTY_NOTICES.md` and the license files shipped with the corresponding components.
+Packizard retains licenses and notices for third-party code that remains in use, including the current PS5 runtime compatibility implementation, Auto-Backpork tooling and LibProsperoPKG. See `THIRD_PARTY_NOTICES.md` and the license files shipped with the corresponding components.

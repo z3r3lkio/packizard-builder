@@ -2,14 +2,14 @@
 
 Packizard Builder contains or builds against third-party components that retain their own copyright and license terms. Packizard's application source, engine integration, UI and build pipeline are maintained directly in this repository; third-party notices below apply only to the components identified here.
 
-## AMPR-compatible runtime/tooling components
+## PS5 runtime compatibility implementation
 
-Packizard retains selected compatibility components and interfaces originating from the public `drakmor/ampr_emu` project while the Packizard-owned engine and runtime migration is completed.
+The Packizard PS5 Runtime is maintained in-repository under `packizard_runtime/ps5/packizard_ps5_runtime`. Its current sceAmpr ABI compatibility implementation contains source derived from the public `drakmor/ampr_emu` project, so the corresponding GPL attribution and license are retained with that source and redistributed runtime component.
 
-- upstream repository: https://github.com/drakmor/ampr_emu
-- license file: `external/ampr_emu/LICENSE`
+- upstream project: https://github.com/drakmor/ampr_emu
+- retained license: `packizard_runtime/ps5/packizard_ps5_runtime/LICENSE`
 
-The upstream license and bundled dependency license files must remain with redistributed copies of those components.
+The old duplicate `external/ampr_emu` source tree is not part of the Packizard build and has been removed. The `libSceAmpr.sprx` filename is retained solely because games expect that compatibility ABI name.
 
 ## Auto-Backpork
 

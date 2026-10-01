@@ -69,15 +69,19 @@ jobs:
           set -euo pipefail
           test -f packizard_engine/packizard_packer.py
           test -f packizard_engine/packizard_container.py
-          test -f ps5_runtime/src/packizard_runtime.c
-          test ! -e external/ampr_emu/tools/ampr_pack_format.py
+          test -f packizard_engine/packizard_lz4.py
+          test -f packizard_runtime/ps5/packizard_ps5_runtime/Makefile
+          test -d packizard_runtime/ps5/packizard_ps5_runtime/src
+          test ! -e external/ampr_emu
           test ! -e ci/bootstrap_source.py
+      - name: Validate bundled Packizard PS5 Runtime
+        run: python scripts/validate_packizard_runtime.py
       - name: Run tests
         env:
           QT_QPA_PLATFORM: offscreen
         run: python -m unittest discover -s tests -v
-      - name: Compile Python sources
-        run: python -m compileall -q .
+      - name: Compile first-party Python sources
+        run: python -m compileall -q main.py core gui packizard_engine scripts utils tests
 
   build:
     name: ${{ matrix.platform }} · ${{ matrix.arch }}
@@ -129,6 +133,21 @@ jobs:
           PYTHONWARNINGS: 'ignore:invalid escape sequence:SyntaxWarning'
           PACKIZARD_TARGET_ARCH: ${{ matrix.arch }}
         run: ./build_macos.sh
+      - name: Verify Windows single-executable archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = Get-ChildItem -Path release -Recurse -Filter 'Packizard-Builder-*-Windows-*.zip' | Select-Object -First 1
+          if (-not $archive) { throw 'Windows release ZIP not found' }
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($archive.FullName)
+          try {
+            $entries = @($zip.Entries | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Name) })
+            if ($entries.Count -ne 1 -or $entries[0].Name -ne 'Packizard-Builder.exe') {
+              throw "Windows release ZIP must contain exactly Packizard-Builder.exe; found: $($entries.FullName -join ', ')"
+            }
+          }
+          finally { $zip.Dispose() }
       - name: Upload Windows package
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7.0.1

@@ -92,6 +92,13 @@ def _install_ps5_runtime(root: Path) -> None:
     profile.assert_installed(root)
 
 
+def _install_source_materialization_test(root: Path) -> None:
+    source = Path(__file__).resolve().parent / "materialize_owned_source_test.py"
+    destination = root / "tests" / "test_zzzz_materialize_owned_source.py"
+    if source.is_file() and destination.parent.is_dir():
+        shutil.copy2(source, destination)
+
+
 def apply(root: Path) -> None:
     root = Path(root)
     _make_engine_scripts_self_contained(root)
@@ -109,6 +116,7 @@ def apply(root: Path) -> None:
     _patch_cross_platform_test(root)
     _patch_build_diagnostics_test(root)
     _install_ps5_runtime(root)
+    _install_source_materialization_test(root)
     changed = _patch_build_scripts(root)
     print(f"Configured Packizard worker identities and PS5 runtime; patched {changed} packaging script(s)")
 

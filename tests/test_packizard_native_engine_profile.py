@@ -33,8 +33,11 @@ class NativeEngineProfileTests(unittest.TestCase):
             changed = native_profile.patch_product_ui(root)
             self.assertEqual(len(changed), 2)
             native_profile.assert_product_references_are_clean(root)
-            self.assertIn("Packizard Builder", (root / "main.py").read_text(encoding="utf-8"))
-            self.assertIn("Packizard Engine", (root / "main.py").read_text(encoding="utf-8"))
+            main_text = (root / "main.py").read_text(encoding="utf-8")
+            self.assertIn("Packizard Builder", main_text)
+            self.assertIn("Packizard compression", main_text)
+            self.assertNotIn("Lazy", main_text)
+            self.assertNotIn("AMPR/LZ4", main_text)
             self.assertIn("Packizard Compression", (root / "gui" / "page.py").read_text(encoding="utf-8"))
 
     def test_product_reference_guard_rejects_legacy_name(self):

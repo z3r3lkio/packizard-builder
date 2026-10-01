@@ -138,7 +138,7 @@ jobs:
         shell: pwsh
         run: |
           Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $archive = Get-ChildItem -Path release -Recurse -Filter 'Packizard-Builder-*-Windows-*.zip' | Select-Object -First 1
+          $archive = Get-ChildItem -Path ..\release -Recurse -Filter 'Packizard-Builder-*-Windows-*.zip' | Select-Object -First 1
           if (-not $archive) { throw 'Windows release ZIP not found' }
           $zip = [System.IO.Compression.ZipFile]::OpenRead($archive.FullName)
           try {
@@ -154,8 +154,8 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: |
-            release/*-windows-${{ matrix.arch }}/Packizard-Builder-*-Windows-${{ matrix.arch }}.zip
-            release/*-windows-${{ matrix.arch }}/SHA256SUMS-Windows-${{ matrix.arch }}.txt
+            ../release/*-windows-${{ matrix.arch }}/Packizard-Builder-*-Windows-${{ matrix.arch }}.zip
+            ../release/*-windows-${{ matrix.arch }}/SHA256SUMS-Windows-${{ matrix.arch }}.txt
           if-no-files-found: error
       - name: Upload Linux package
         if: runner.os == 'Linux'
@@ -163,9 +163,9 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: |
-            release/*-linux-${{ matrix.arch }}/Packizard-Builder-*-Linux-${{ matrix.arch }}.AppImage
-            release/*-linux-${{ matrix.arch }}/Packizard-Builder-*-Linux-${{ matrix.arch }}.tar.gz
-            release/*-linux-${{ matrix.arch }}/SHA256SUMS-Linux-${{ matrix.arch }}.txt
+            ../release/*-linux-${{ matrix.arch }}/Packizard-Builder-*-Linux-${{ matrix.arch }}.AppImage
+            ../release/*-linux-${{ matrix.arch }}/Packizard-Builder-*-Linux-${{ matrix.arch }}.tar.gz
+            ../release/*-linux-${{ matrix.arch }}/SHA256SUMS-Linux-${{ matrix.arch }}.txt
           if-no-files-found: error
       - name: Upload macOS package
         if: runner.os == 'macOS'
@@ -173,9 +173,9 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: |
-            release/*-macos-${{ matrix.arch }}/Packizard-Builder-*-macOS-${{ matrix.arch }}.zip
-            release/*-macos-${{ matrix.arch }}/Packizard-Builder-*-macOS-${{ matrix.arch }}.tar.gz
-            release/*-macos-${{ matrix.arch }}/SHA256SUMS-macOS-${{ matrix.arch }}.txt
+            ../release/*-macos-${{ matrix.arch }}/Packizard-Builder-*-macOS-${{ matrix.arch }}.zip
+            ../release/*-macos-${{ matrix.arch }}/Packizard-Builder-*-macOS-${{ matrix.arch }}.tar.gz
+            ../release/*-macos-${{ matrix.arch }}/SHA256SUMS-macOS-${{ matrix.arch }}.txt
           if-no-files-found: error
 
   golden:

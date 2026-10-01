@@ -1,18 +1,16 @@
 # Packizard PS5 Runtime
 
-Packizard keeps the PS5-side compatibility runtime source in this repository so desktop builds no longer depend on obtaining that source from the Lazy_AMPR repository.
+Packizard isolates the PS5-side compatibility runtime under `packizard_runtime/ps5/packizard_ps5_runtime` during source reconstruction. The runtime keeps the `sceAmpr*` ABI and compatibility filename `libSceAmpr.sprx` because games can import those names directly; they are compatibility contracts, not product branding.
 
-The runtime must preserve the `sceAmpr*` ABI and the compatibility filename `libSceAmpr.sprx` because games can import those names directly. Those names are an ABI contract, not product branding. The product-facing component is **Packizard PS5 Runtime**.
+During this migration milestone the source is copied out of the reconstructed compatibility tree and given a reproducible Packizard build wrapper. The next source-absorption milestone moves the complete validated source tree into this repository so reconstruction no longer needs the Lazy_AMPR baseline.
 
-`packizard_ps5_runtime.tar.xz` contains the PS5 runtime source, headers, payload-SDK build files, LZ4 source needed by the runtime and the applicable GPL license. Its SHA-256 is pinned in `ci/packizard_ps5_runtime.py`.
-
-To build the compatibility runtime on a machine with the PS5 payload SDK:
+Build on a machine with `ps5-payload-sdk`:
 
 ```bash
 cd packizard_runtime/ps5/packizard_ps5_runtime
 PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk ./build_packizard_runtime.sh
 ```
 
-The output used by packaged games is `out/packizard/libSceAmpr.sprx`.
+The compatibility output is `out/packizard/libSceAmpr.sprx`.
 
-The source currently retains portions originating in `ampr_emu`; therefore its GPL attribution must remain until those portions are independently replaced. Removing the attribution before replacing the code would misstate provenance.
+The current runtime implementation contains source derived from `ampr_emu`. Its GPL attribution must remain until those portions are independently replaced.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import shutil
 from pathlib import Path
 
@@ -77,6 +78,20 @@ def _patch_build_diagnostics_test(root: Path) -> None:
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
+def _install_ps5_runtime(root: Path) -> None:
+    source = root / "external" / "ampr_emu" / "src"
+    if not source.is_dir():
+        return
+    profile_path = Path(__file__).resolve().parent / "packizard_ps5_runtime.py"
+    spec = importlib.util.spec_from_file_location("packizard_ps5_runtime_profile", profile_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load Packizard PS5 runtime profile: {profile_path}")
+    profile = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(profile)
+    profile.install(root)
+    profile.assert_installed(root)
+
+
 def apply(root: Path) -> None:
     root = Path(root)
     _make_engine_scripts_self_contained(root)
@@ -93,8 +108,9 @@ def apply(root: Path) -> None:
     _write_tool_runner(root)
     _patch_cross_platform_test(root)
     _patch_build_diagnostics_test(root)
+    _install_ps5_runtime(root)
     changed = _patch_build_scripts(root)
-    print(f"Configured Packizard worker identities; patched {changed} packaging script(s)")
+    print(f"Configured Packizard worker identities and PS5 runtime; patched {changed} packaging script(s)")
 
 
 def main() -> int:

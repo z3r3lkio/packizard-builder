@@ -28,6 +28,15 @@ jobs:
           test -f ps5_runtime/src/packizard_runtime.c
           test ! -e ci/bootstrap_source.py
           test ! -e ci/bootstrap_source_impl.py
+          test ! -e UPSTREAM_BASE.md
           ! grep -Fq 'bootstrap_source.py' .github/workflows/package.yml
+      - name: Reject retired application identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -R -I -n -E 'Lazy_AMPR|Lazy AMPR|Nazky/Lazy_AMPR' . --exclude-dir=.git --exclude='*.pyc'; then
+            echo 'Retired application identity found in source tree.' >&2
+            exit 1
+          fi
       - name: Compile Python source
         run: python -m compileall -q .

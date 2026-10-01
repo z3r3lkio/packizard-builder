@@ -3,13 +3,12 @@ import re
 import shutil
 from pathlib import Path
 
-from utils.cross_platform import get_app_data_dir, get_legacy_app_data_dir
+from utils.cross_platform import get_app_data_dir
 
 BUNDLE_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = get_app_data_dir()
 TOML_DIR = DATA_DIR / "toml_profiles"
 STATE_FILE = DATA_DIR / "state.json"
-LEGACY_DATA_DIR = get_legacy_app_data_dir()
 
 SETTINGS_VERSION = 5   # bump this whenever the saved settings schema changes
 
@@ -58,17 +57,14 @@ def _normalized_settings(saved):
             settings[key] = DEFAULT_SETTINGS[key]
     return settings
 
-def slug(s): return re.sub(r"[^a-z0-9]+", "_", str(s).lower()).strip("_")
+
+def slug(s):
+    return re.sub(r"[^a-z0-9]+", "_", str(s).lower()).strip("_")
+
 
 class State:
     def __init__(self):
         TOML_DIR.mkdir(parents=True, exist_ok=True)
-        legacy_tomls = LEGACY_DATA_DIR / "toml_profiles"
-        if legacy_tomls.is_dir() and legacy_tomls.resolve() != TOML_DIR.resolve():
-            for profile in legacy_tomls.glob("*.toml"):
-                destination = TOML_DIR / profile.name
-                if not destination.exists():
-                    shutil.copy2(profile, destination)
 
         bundled_tomls = BUNDLE_ROOT / "toml_profiles"
         if bundled_tomls.is_dir() and bundled_tomls.resolve() != TOML_DIR.resolve():
@@ -79,11 +75,8 @@ class State:
 
         raw = {}
         state_source = STATE_FILE
-        legacy_user_state = LEGACY_DATA_DIR / "state.json"
         bundled_state = BUNDLE_ROOT / "state.json"
-        if not state_source.exists() and legacy_user_state.is_file():
-            state_source = legacy_user_state
-        elif not state_source.exists() and bundled_state.is_file():
+        if not state_source.exists() and bundled_state.is_file():
             state_source = bundled_state
         if state_source.exists():
             try:
@@ -97,8 +90,9 @@ class State:
             saved_settings = {}
         self.settings = _normalized_settings(saved_settings)
 
-        # One-time migration: builds before SETTINGS_VERSION 2 stored lz4_level=12
-        # as the old default, so the saved 12 keeps overriding the new default 9.
+        # One-time schema migration: builds before SETTINGS_VERSION 2 stored
+        # lz4_level=12 as the old default, so that saved value keeps overriding
+        # the current default unless it is normalized here.
         try:
             saved_version = int(raw.get("settings_version", 1))
         except (TypeError, ValueError):
@@ -133,40 +127,41 @@ class State:
 
     def upsert_game(self, path, **kw):
         e = self.games.setdefault(str(path), {"path": str(path)})
-        e.update(kw); self.save(); return e
-    def get_game(self, path): return self.games.get(str(path))
-    def tomls(self): return sorted(TOML_DIR.glob("*.toml"))
+        e.update(kw)
+        self.save()
+        return e
+
+    def get_game(self, path):
+        return self.games.get(str(path))
+
+    def tomls(self):
+        return sorted(TOML_DIR.glob("*.toml"))
+
     def auto_toml_for(self, title_id, title, content_id=""):
         """Match TOML files to games using flexible name matching."""
-        # Normalize all inputs: remove separators and lowercase
         def normalize(s):
             if not s:
                 return ""
             return re.sub(r"[^a-z0-9]", "", str(s).lower())
-        
-        # Build normalized keys from game metadata
+
         keys = [normalize(title_id), normalize(title), normalize(content_id)]
-        keys = [k for k in keys if k]  # Remove empty strings
-        
-        # Also create a version without underscores for exact matches
+        keys = [k for k in keys if k]
         keys.extend([k.replace("_", "") for k in keys])
-        
+
         for t in self.tomls():
             stem = normalize(t.stem)
             if not stem:
                 continue
-            
-            # Check if TOML name matches any game key
             for k in keys:
                 if not k:
                     continue
-                # Match if: exact match, TOML contains game name, or game name contains TOML
                 if stem == k or stem in k or k in stem:
                     return t.name
-        
         return None
+
     def games_using(self, toml_name):
         return [e for e in self.games.values() if e.get("toml") == toml_name]
+
     def link_toml(self, path, name, src="auto"):
         self.upsert_game(path, toml=name, toml_src=src)
 

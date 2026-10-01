@@ -39,24 +39,26 @@ def _replace_text(path: Path, replacements: tuple[tuple[str, str], ...]) -> bool
 
 def install_codec(repo_root: Path, output: Path) -> None:
     source = repo_root / "native" / "packizard_lz4.py"
-    destination = output / "core" / "packizard_lz4.py"
+    tools_dir = output / "external" / "ampr_emu" / "tools"
+    destination = tools_dir / "packizard_lz4.py"
     if not source.is_file():
         raise RuntimeError(f"missing Packizard codec source: {source}")
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    if not tools_dir.is_dir():
+        raise RuntimeError(f"AMPR tools directory not found: {tools_dir}")
     shutil.copy2(source, destination)
 
-    pack_format = output / "external" / "ampr_emu" / "tools" / "ampr_pack_format.py"
+    pack_format = tools_dir / "ampr_pack_format.py"
     if not pack_format.is_file():
         raise RuntimeError(f"AMPR pack format module not found: {pack_format}")
     text = pack_format.read_text(encoding="utf-8")
     marker = "class Lz4Codec:\n"
     if marker not in text:
-        if "PackizardLz4Codec as Lz4Codec" in text:
+        if "from packizard_lz4 import PackizardLz4Codec as Lz4Codec" in text:
             return
         raise RuntimeError("unexpected Lz4Codec layout in ampr_pack_format.py")
 
     replacement = (
-        "from core.packizard_lz4 import PackizardLz4Codec as Lz4Codec\n\n\n"
+        "from packizard_lz4 import PackizardLz4Codec as Lz4Codec\n\n\n"
         "class _LegacyLz4Codec:\n"
     )
     text = text.replace(marker, replacement, 1)
@@ -77,9 +79,6 @@ def patch_product_ui(output: Path) -> list[Path]:
 
 
 def _apply_single_executable_profile(output: Path) -> None:
-    # The current milestone is the Windows distribution used for local PS5
-    # workflows. Linux AppImage is already a single distributable file and
-    # macOS requires an application bundle by platform convention.
     if sys.platform != "win32":
         return
     profile_path = Path(__file__).resolve().parent / "single_executable_profile.py"

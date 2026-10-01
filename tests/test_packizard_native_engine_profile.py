@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -47,6 +49,28 @@ class NativeEngineProfileTests(unittest.TestCase):
             (root / "main.py").write_text('TITLE = "Lazy_AMPR"\n', encoding="utf-8")
             with self.assertRaises(RuntimeError):
                 native_profile.assert_product_references_are_clean(root)
+
+    def test_codec_is_installed_with_standalone_worker_imports(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            tools = root / "external" / "ampr_emu" / "tools"
+            tools.mkdir(parents=True)
+            (tools / "ampr_pack_format.py").write_text(
+                "class Lz4Codec:\n    pass\n",
+                encoding="utf-8",
+            )
+            native_profile.install_codec(ROOT, root)
+            self.assertTrue((tools / "packizard_lz4.py").is_file())
+            text = (tools / "ampr_pack_format.py").read_text(encoding="utf-8")
+            self.assertIn("from packizard_lz4 import PackizardLz4Codec as Lz4Codec", text)
+            completed = subprocess.run(
+                [sys.executable, "-c", "import ampr_pack_format; print(ampr_pack_format.Lz4Codec.__name__)"],
+                cwd=tools,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertEqual(completed.stdout.strip(), "PackizardLz4Codec")
 
     def test_single_executable_profile_generates_onefile_windows_build(self):
         with tempfile.TemporaryDirectory() as temp:

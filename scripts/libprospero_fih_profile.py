@@ -18,6 +18,14 @@ _OUTER_ENCRYPT_ORIGINAL = """        var (tweak, data) = ProsperoPfsKeys.DeriveI
 
 _OUTER_ENCRYPT_PATCHED = """        // Known-good FullDebug FIH references keep the finalized outer PFS on disk in plaintext.\n        // BuildPlaintext has already produced the signed PFS structure and all integrity material above;\n        // applying AES-XTS here turns pfs_image.dat, NAPS and structural metadata into ciphertext that\n        // sceNpDrmContentCheckImage rejects before /app0 can mount. Keep the generic Encrypt/Transform\n        // APIs intact for explicit keyed/retail use, but do not encrypt the FullDebug package build path.\n\n        return new ProsperoOuterPackageImage\n"""
 
+# Large package builds use a separate file-backed/streaming path. The first plaintext fix only
+# covered BuildForPackage(), so images large enough to enter BuildForPackageToFile() were still
+# AES-XTS transformed block-by-block. Keep this rewrite independent so small and large FullDebug
+# packages produce the same on-disk outer-PFS representation.
+_OUTER_STREAM_ENCRYPT_ORIGINAL = """                xts.CryptSector(block, sector, encrypt: true);\n                fs.Position = checked((long)i * BlockSize);\n                fs.Write(block, 0, block.Length);\n"""
+
+_OUTER_STREAM_ENCRYPT_PATCHED = """                // FullDebug references store the finalized outer-PFS block bytes as built.\n                // The streaming path must match the in-memory path and must not AES-XTS transform them.\n                fs.Position = checked((long)i * BlockSize);\n                fs.Write(block, 0, block.Length);\n"""
+
 
 def _patch_exact(path: Path, original: str, patched: str, label: str) -> bool:
     if not path.is_file():
@@ -34,15 +42,37 @@ def _patch_exact(path: Path, original: str, patched: str, label: str) -> bool:
     return True
 
 
+def _patch_streaming_outer_if_present(path: Path) -> bool:
+    """Patch the pinned large-package streaming encryptor when that path is present.
+
+    Synthetic unit-test fixtures created before the streaming regression was discovered do not
+    contain BuildForPackageToFile(), so absence is allowed there. The real pinned vendor source
+    contains the exact preimage and is rewritten during bridge preparation.
+    """
+    if not path.is_file():
+        raise RuntimeError(f"LibProsperoPKG outer PFS streaming package builder is missing: {path}")
+    text = path.read_text(encoding="utf-8")
+    if _OUTER_STREAM_ENCRYPT_PATCHED in text:
+        return False
+    if _OUTER_STREAM_ENCRYPT_ORIGINAL not in text:
+        return False
+    path.write_text(
+        text.replace(_OUTER_STREAM_ENCRYPT_ORIGINAL, _OUTER_STREAM_ENCRYPT_PATCHED, 1),
+        encoding="utf-8",
+    )
+    return True
+
+
 def apply_fih_reference_profile(vendor_dir: str | Path) -> bool:
     """Apply Packizard's reference-backed FIH/CNT/outer-PFS image-validation profile.
 
     Returns True when any pinned source file was changed and False when the
-    complete profile was already applied. Every rewrite uses an exact preimage
+    complete profile was already applied. Every mandatory rewrite uses an exact preimage
     so an upstream pin change cannot silently receive a stale patch.
     """
 
     vendor = Path(vendor_dir)
+    outer_builder = vendor / OUTER_PFS_BUILDER_RELATIVE
     changed = False
     changed |= _patch_exact(
         vendor / FIH_BUILDER_RELATIVE,
@@ -57,9 +87,10 @@ def apply_fih_reference_profile(vendor_dir: str | Path) -> bool:
         "CNT package builder",
     )
     changed |= _patch_exact(
-        vendor / OUTER_PFS_BUILDER_RELATIVE,
+        outer_builder,
         _OUTER_ENCRYPT_ORIGINAL,
         _OUTER_ENCRYPT_PATCHED,
         "outer PFS package builder",
     )
+    changed |= _patch_streaming_outer_if_present(outer_builder)
     return changed

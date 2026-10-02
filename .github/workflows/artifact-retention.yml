@@ -1,0 +1,55 @@
+name: Trim Package Artifacts
+
+on:
+  workflow_run:
+    workflows: ["Package Packizard Builder"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  trim:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Keep artifacts only for the two newest package runs
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const workflowId = 'package.yml';
+
+            const runs = await github.paginate(
+              github.rest.actions.listWorkflowRuns,
+              { owner, repo, workflow_id: workflowId, per_page: 100 }
+            );
+
+            runs.sort((a, b) => {
+              const time = new Date(b.created_at) - new Date(a.created_at);
+              return time || b.run_number - a.run_number;
+            });
+
+            const keep = new Set(runs.slice(0, 2).map(run => run.id));
+            core.info(`Keeping package run artifacts for: ${[...keep].join(', ') || 'none'}`);
+
+            let deleted = 0;
+            for (const run of runs.slice(2)) {
+              const artifacts = await github.paginate(
+                github.rest.actions.listWorkflowRunArtifacts,
+                { owner, repo, run_id: run.id, per_page: 100 }
+              );
+              for (const artifact of artifacts) {
+                await github.rest.actions.deleteArtifact({
+                  owner,
+                  repo,
+                  artifact_id: artifact.id,
+                });
+                deleted += 1;
+                core.info(`Deleted artifact ${artifact.id} (${artifact.name}) from run ${run.id}`);
+              }
+            }
+
+            core.notice(`Deleted ${deleted} old package artifact(s); retained only the newest two package runs.`);

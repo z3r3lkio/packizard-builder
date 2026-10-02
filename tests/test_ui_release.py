@@ -237,7 +237,10 @@ class UiReleaseTests(unittest.TestCase):
         self.assertEqual(window.windowTitle(), "Packizard Builder 0.2.0")
         self.assertEqual(VERSION, "0.2.0")
         side_text = [label.text() for label in window.findChildren(QLabel)]
-        self.assertIn("Packizard · AMPR + LibProsperoPKG", side_text)
+        self.assertIn("Packizard Builder", side_text)
+        pkg_text = "\n".join(label.text() for label in window.pkg_page.findChildren(QLabel))
+        for external_name in ("PPR-PKG Builder", "LibProsperoPKG"):
+            self.assertNotIn(external_name, pkg_text)
         joined = "\n".join(side_text)
         self.assertIn("Integrator · Packizard Builder", side_text)
         for name in ("Nazky", "Deckerr97", "Pippo", "drakmor", "SvenGDK"):

@@ -17,7 +17,7 @@ ENV_BRIDGE_PATH = "PACKIZARD_PKG_BRIDGE"
 
 
 class PkgEngineError(RuntimeError):
-    """Raised when Packizard's integrated package engine cannot complete a build."""
+    """Raised when Packizard's integrated package engine cannot complete an operation."""
 
 
 @dataclass
@@ -125,6 +125,153 @@ def probe_pkg_engine(*, root: Path | None = None, timeout: float = 8.0) -> PkgEn
     except json.JSONDecodeError as exc:
         raise PkgEngineError("Integrated PKG engine returned an invalid probe response.") from exc
     return PkgEngineInfo(path=bridge, engine_name=str(payload.get("engine") or ENGINE_NAME), engine_version=str(payload.get("engineVersion") or ENGINE_VERSION), engine_ref=str(payload.get("engineRef") or ENGINE_REF), keys_available=payload.get("keysAvailable"), ppr_gui_reference_version=str(payload.get("pprGuiReferenceVersion") or PPR_GUI_REFERENCE_VERSION))
+
+
+def _run_pkg_operation(
+    args: list[str],
+    *,
+    log_callback: Callable[[str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    process_callback: Callable[[subprocess.Popen | None], None] | None = None,
+    root: Path | None = None,
+) -> tuple[dict, list[str]]:
+    bridge = find_pkg_bridge(root=root)
+    if not bridge:
+        raise PkgEngineError("The integrated PKG engine is missing from this Packizard build. Reinstall a complete release or rebuild Packizard with the PKG bridge enabled.")
+
+    process: subprocess.Popen | None = None
+    try:
+        kwargs: dict = {
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.STDOUT,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "cwd": str(bridge.parent),
+        }
+        if sys.platform == "win32":
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        process = subprocess.Popen(_command_for_bridge(bridge, *args), **kwargs)
+        if process_callback:
+            process_callback(process)
+
+        warnings: list[str] = []
+        result_payload: dict = {}
+        error_message = ""
+        if process.stdout is None:
+            raise PkgEngineError("PKG bridge did not expose a progress stream.")
+        for raw in process.stdout:
+            if cancel_check and cancel_check():
+                try:
+                    process.terminate()
+                except OSError:
+                    pass
+                raise PkgEngineError("PKG operation cancelled by user.")
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                if log_callback:
+                    log_callback(line)
+                continue
+            event_type = str(event.get("type") or "").casefold()
+            if event_type == "log":
+                message = str(event.get("message") or "")
+                if message and log_callback:
+                    log_callback(message)
+            elif event_type == "warning":
+                message = str(event.get("message") or "")
+                if message:
+                    warnings.append(message)
+                    if log_callback:
+                        log_callback(f"PKG warning: {message}")
+            elif event_type == "result":
+                result_payload = dict(event)
+            elif event_type == "error":
+                error_message = str(event.get("message") or "PKG operation failed.")
+                details = str(event.get("details") or "").strip()
+                if details:
+                    error_message += f"\n{details}"
+
+        returncode = process.wait()
+        if process.stdout is not None:
+            process.stdout.close()
+        if returncode != 0:
+            raise PkgEngineError(error_message or f"Integrated PKG engine exited with code {returncode}.")
+        if not result_payload:
+            raise PkgEngineError("Integrated PKG engine completed without reporting a result.")
+        return result_payload, warnings
+    finally:
+        if process_callback:
+            process_callback(None)
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+            except OSError:
+                pass
+
+
+def run_pkg_verify(
+    package_path: str | Path,
+    *,
+    expected_content_id: str = "",
+    log_callback: Callable[[str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    process_callback: Callable[[subprocess.Popen | None], None] | None = None,
+    root: Path | None = None,
+) -> Path:
+    package = Path(package_path).expanduser().resolve()
+    if not package.is_file():
+        raise PkgEngineError(f"PKG file not found: {package}")
+    args = ["verify", "--package", str(package)]
+    expected = (expected_content_id or "").strip().upper()
+    if expected:
+        if len(expected) != 36:
+            raise PkgEngineError("Expected Content ID must contain exactly 36 characters.")
+        args.extend(["--content-id", expected])
+    payload, _ = _run_pkg_operation(
+        args,
+        log_callback=log_callback,
+        cancel_check=cancel_check,
+        process_callback=process_callback,
+        root=root,
+    )
+    output = Path(str(payload.get("outputPath") or package))
+    return output.resolve()
+
+
+def run_pkg_extract(
+    package_path: str | Path,
+    output_directory: str | Path,
+    passcode: str,
+    *,
+    log_callback: Callable[[str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    process_callback: Callable[[subprocess.Popen | None], None] | None = None,
+    root: Path | None = None,
+) -> Path:
+    package = Path(package_path).expanduser().resolve()
+    if not package.is_file():
+        raise PkgEngineError(f"PKG file not found: {package}")
+    raw_output = str(output_directory).strip()
+    if not raw_output:
+        raise PkgEngineError("Extraction folder is required.")
+    output = Path(raw_output).expanduser().resolve()
+    code = (passcode or "").strip() or ("0" * 32)
+    if len(code) != 32:
+        raise PkgEngineError("PKG passcode must contain exactly 32 characters.")
+    output.mkdir(parents=True, exist_ok=True)
+    payload, _ = _run_pkg_operation(
+        ["extract", "--package", str(package), "--output", str(output), "--passcode", code],
+        log_callback=log_callback,
+        cancel_check=cancel_check,
+        process_callback=process_callback,
+        root=root,
+    )
+    result = Path(str(payload.get("outputPath") or output))
+    return result.resolve()
 
 
 def run_pkg_build(options: PkgBuildOptions, *, log_callback: Callable[[str], None] | None = None, cancel_check: Callable[[], bool] | None = None, process_callback: Callable[[subprocess.Popen | None], None] | None = None, root: Path | None = None) -> tuple[Path, list[str]]:

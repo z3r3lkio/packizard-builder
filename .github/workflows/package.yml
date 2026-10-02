@@ -97,10 +97,21 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           architecture: ${{ matrix.arch == 'arm64' && 'arm64' || 'x64' }}
+      - name: Stamp channel build version
+        shell: bash
+        env:
+          PACKIZARD_BRANCH: ${{ github.head_ref || github.ref_name }}
+          PACKIZARD_REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          python scripts/stamp_build_version.py --branch "$PACKIZARD_BRANCH" --ref-type "$PACKIZARD_REF_TYPE"
+          cat version.py
       - uses: actions/setup-dotnet@v6.0.0
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}

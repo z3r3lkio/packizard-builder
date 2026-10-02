@@ -1,6 +1,12 @@
 """Frozen Packizard packer entry point."""
 import sys
-from packizard_engine import packer
+
+# Respect an explicitly injected packer module (used by diagnostics/tests) while
+# resolving the real Packizard engine normally in frozen/source builds.
+packer = sys.modules.get("packizard_engine.packer")
+if packer is None:
+    from packizard_engine import packer
+
 from packizard_engine.streaming_pack import install as install_streaming_pack
 from packizard_engine.streaming_verify import install as install_streaming_verify
 

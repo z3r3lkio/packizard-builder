@@ -93,6 +93,9 @@ def main() -> int:
         "true",
         "-p:PublishSingleFile=true",
         "-p:PublishTrimmed=false",
+        # Keep the integrated bridge warning-free. New C# warnings must be fixed,
+        # not silently accumulated in release builds.
+        "-p:TreatWarningsAsErrors=true",
         "-o",
         str(output),
     )

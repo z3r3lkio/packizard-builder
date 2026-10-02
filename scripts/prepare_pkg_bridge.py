@@ -14,6 +14,7 @@ VERSION_FILE = ROOT / "bridge" / "LIBPROSPERO_VERSION"
 VENDOR_DIR = ROOT / "vendor" / "LibProsperoPKG"
 PROJECT = ROOT / "bridge" / "Packizard.PkgBridge" / "Packizard.PkgBridge.csproj"
 
+from libprospero_cnt_drm_profile import apply_cnt_drm_profile
 from libprospero_fih_profile import apply_fih_reference_profile
 
 
@@ -35,7 +36,6 @@ def ensure_upstream() -> str:
         run(git, "clone", "--filter=blob:none", "--no-checkout", UPSTREAM_URL, str(VENDOR_DIR))
         run(git, "checkout", "--detach", ref, cwd=VENDOR_DIR)
     else:
-        # Refuse silently drifting vendor trees. A git checkout is verified when available.
         git_dir = VENDOR_DIR / ".git"
         git = shutil.which("git")
         if git and git_dir.exists():
@@ -66,6 +66,7 @@ def main() -> int:
 
     try:
         profile_changed = apply_fih_reference_profile(VENDOR_DIR)
+        profile_changed |= apply_cnt_drm_profile(VENDOR_DIR)
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc
 
@@ -97,7 +98,7 @@ def main() -> int:
     profile_state = "applied" if profile_changed else "already applied"
     print(
         f"Built Packizard.PkgBridge for {args.rid} with LibProsperoPKG {version} ({ref}); "
-        f"Packizard FIH reference profile {profile_state}"
+        f"Packizard reference profiles {profile_state}"
     )
     return 0
 

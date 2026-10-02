@@ -17,6 +17,7 @@ PROJECT = ROOT / "bridge" / "Packizard.PkgBridge" / "Packizard.PkgBridge.csproj"
 from libprospero_cnt_drm_profile import apply_cnt_drm_profile
 from libprospero_fih_extract_fix import apply_fih_extract_fix
 from libprospero_fih_profile import apply_fih_reference_profile
+from libprospero_naps_block_profile import apply_naps_block_profile
 
 
 def run(*args: str, cwd: Path | None = None) -> None:
@@ -68,6 +69,7 @@ def main() -> int:
     try:
         profile_changed = apply_fih_reference_profile(VENDOR_DIR)
         profile_changed |= apply_fih_extract_fix(VENDOR_DIR)
+        profile_changed |= apply_naps_block_profile(VENDOR_DIR)
         profile_changed |= apply_cnt_drm_profile(VENDOR_DIR)
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc

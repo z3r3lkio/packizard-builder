@@ -13,11 +13,11 @@ jobs:
   shadowmount-exlz:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout ShadowMountPlus 1.7beta3
+      - name: Checkout ShadowMountPlus 1.7beta4
         uses: actions/checkout@v4
         with:
           repository: drakmor/ShadowMountPlus
-          ref: "1.7beta3"
+          ref: "1.7beta4"
           path: ShadowMountPlus
           fetch-depth: 0
 
@@ -81,7 +81,7 @@ jobs:
       - name: Upload ELF
         uses: actions/upload-artifact@v4
         with:
-          name: shadowmountplus-1.7beta3-exlz-elf
+          name: shadowmountplus-1.7beta4-exlz-elf
           retention-days: 7
           if-no-files-found: error
           path: |

@@ -34,6 +34,9 @@ internal sealed class BuildRequest
     [JsonPropertyName("output_format")]
     public string OutputFormat { get; init; } = nameof(ProsperoOutputFormat.DebugImage);
 
+    [JsonPropertyName("image_profile")]
+    public string ImageProfile { get; init; } = nameof(ProsperoPackageImageProfile.Standard);
+
     [JsonPropertyName("application_type")]
     public string ApplicationType { get; init; } = nameof(ProsperoApplicationType.NotSpecified);
 
@@ -140,6 +143,8 @@ internal static class Program
             throw new ArgumentException($"Unsupported package mode: {request.Mode}");
         if (!Enum.TryParse<ProsperoOutputFormat>(request.OutputFormat, true, out var outputFormat))
             throw new ArgumentException($"Unsupported output format: {request.OutputFormat}");
+        if (!Enum.TryParse<ProsperoPackageImageProfile>(request.ImageProfile, true, out var imageProfile))
+            throw new ArgumentException($"Unsupported package image profile: {request.ImageProfile}");
         if (!Enum.TryParse<ProsperoApplicationType>(request.ApplicationType, true, out var applicationType))
             throw new ArgumentException($"Unsupported application type: {request.ApplicationType}");
 
@@ -154,6 +159,7 @@ internal static class Program
             Passcode = string.IsNullOrWhiteSpace(request.Passcode) ? new string('0', 32) : request.Passcode.Trim(),
             Mode = mode,
             OutputFormat = outputFormat,
+            ImageProfile = imageProfile,
             ApplicationType = applicationType,
             GenerateParamJsonIfMissing = request.GenerateParamJsonIfMissing,
             FakeSignSelfModules = request.FakeSignSelfModules,
@@ -162,7 +168,7 @@ internal static class Program
         if (!string.IsNullOrWhiteSpace(request.ApplicationDrmType))
             options.ApplicationDrmType = request.ApplicationDrmType.Trim();
 
-        Emit(new { type = "log", message = $"Packizard PKG Engine: building {mode} package..." });
+        Emit(new { type = "log", message = $"Packizard PKG Engine: building {mode} package ({imageProfile} image profile)..." });
         var result = ProsperoPackageBuilder.Build(options, message => Emit(new { type = "log", message }));
         foreach (var warning in result.Warnings)
             Emit(new { type = "warning", message = warning });

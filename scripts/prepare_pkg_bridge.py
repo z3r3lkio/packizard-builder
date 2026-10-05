@@ -18,6 +18,7 @@ from libprospero_cnt_drm_profile import apply_cnt_drm_profile
 from libprospero_fih_extract_fix import apply_fih_extract_fix
 from libprospero_fih_profile import apply_fih_reference_profile
 from libprospero_naps_block_profile import apply_naps_block_profile
+from libprospero_standard_package_profile import apply_standard_package_profile
 from libprospero_warning_cleanup import apply_warning_cleanup
 
 
@@ -74,6 +75,10 @@ def main() -> int:
         profile_changed |= apply_fih_extract_fix(VENDOR_DIR)
         profile_changed |= apply_naps_block_profile(VENDOR_DIR)
         profile_changed |= apply_cnt_drm_profile(VENDOR_DIR)
+        # Publishing Tools fix14 proved that forcing nwonly can pass host integrity checks and still
+        # fail console PPR authentication with EICV/0x80020060. Standard therefore becomes the normal
+        # package-image profile; nwonly remains available explicitly for diagnostics/A-B only.
+        profile_changed |= apply_standard_package_profile(VENDOR_DIR)
         profile_changed |= apply_warning_cleanup(VENDOR_DIR)
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc

@@ -27,7 +27,7 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
-
+          
           # 1) Treat .exlz exactly like exFAT at mount time.
           p = Path('src/sm_image.c')
           src = p.read_text()
@@ -36,7 +36,7 @@ jobs:
           if old not in src:
               raise SystemExit('Expected .exfat detector not found')
           p.write_text(src.replace(old, new, 1))
-
+          
           # 2) Beyond the configured game-directory scan depth, continue
           #    recursively looking only for .exlz image files. This leaves
           #    upstream directory/game discovery semantics unchanged while
@@ -123,17 +123,17 @@ jobs:
             return read_error == 0;
           }
           
-'''
+          '''
           if marker not in src:
               raise SystemExit('sm_scan_tree_walk marker not found')
           src = src.replace(marker, helper + marker, 1)
           old_depth = '  if (remaining_depth == 0u)\n    return true;'
           new_depth = '''  if (remaining_depth == 0u) {
-    // Preserve upstream scan_depth for directories/games, but EXLZ images
-    // are allowed at any depth below a configured scan root.
-    return sm_scan_tree_walk_exlz_deep(scan_root, dir_path, depth_from_root,
+              // Preserve upstream scan_depth for directories/games, but EXLZ images
+              // are allowed at any depth below a configured scan root.
+              return sm_scan_tree_walk_exlz_deep(scan_root, dir_path, depth_from_root,
                                        callbacks, ctx);
-  }'''
+            }'''
           if old_depth not in src:
               raise SystemExit('remaining_depth guard not found')
           p.write_text(src.replace(old_depth, new_depth, 1))

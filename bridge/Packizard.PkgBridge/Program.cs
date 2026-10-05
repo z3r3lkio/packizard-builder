@@ -34,6 +34,9 @@ internal sealed class BuildRequest
     [JsonPropertyName("output_format")]
     public string OutputFormat { get; init; } = nameof(ProsperoOutputFormat.DebugImage);
 
+    [JsonPropertyName("image_profile")]
+    public string ImageProfile { get; init; } = nameof(ProsperoPackageImageProfile.Standard);
+
     [JsonPropertyName("application_type")]
     public string ApplicationType { get; init; } = nameof(ProsperoApplicationType.NotSpecified);
 
@@ -65,6 +68,16 @@ internal static class Program
 
     private static void Emit(object payload) => Console.WriteLine(JsonSerializer.Serialize(payload, JsonOptions));
 
+    private static string? Option(string[] args, string name)
+    {
+        for (int i = 0; i < args.Length - 1; i++)
+        {
+            if (args[i].Equals(name, StringComparison.OrdinalIgnoreCase))
+                return args[i + 1];
+        }
+        return null;
+    }
+
     private static int Main(string[] args)
     {
         try
@@ -89,7 +102,28 @@ internal static class Program
                 return Build(args[2]);
             }
 
-            Emit(new { type = "error", message = "Usage: Packizard.PkgBridge probe | build --request <request.json>" });
+            if (args.Length >= 3 && args[0].Equals("verify", StringComparison.OrdinalIgnoreCase))
+            {
+                string package = Option(args, "--package")
+                    ?? throw new ArgumentException("verify requires --package <path>.");
+                return Verify(package, Option(args, "--content-id"));
+            }
+
+            if (args.Length >= 7 && args[0].Equals("extract", StringComparison.OrdinalIgnoreCase))
+            {
+                string package = Option(args, "--package")
+                    ?? throw new ArgumentException("extract requires --package <path>.");
+                string output = Option(args, "--output")
+                    ?? throw new ArgumentException("extract requires --output <directory>.");
+                string passcode = Option(args, "--passcode") ?? new string('0', 32);
+                return Extract(package, output, passcode);
+            }
+
+            Emit(new
+            {
+                type = "error",
+                message = "Usage: Packizard.PkgBridge probe | build --request <request.json> | verify --package <pkg> [--content-id <id>] | extract --package <pkg> --output <dir> --passcode <32-char>"
+            });
             return 2;
         }
         catch (Exception ex)
@@ -109,6 +143,8 @@ internal static class Program
             throw new ArgumentException($"Unsupported package mode: {request.Mode}");
         if (!Enum.TryParse<ProsperoOutputFormat>(request.OutputFormat, true, out var outputFormat))
             throw new ArgumentException($"Unsupported output format: {request.OutputFormat}");
+        if (!Enum.TryParse<ProsperoPackageImageProfile>(request.ImageProfile, true, out var imageProfile))
+            throw new ArgumentException($"Unsupported package image profile: {request.ImageProfile}");
         if (!Enum.TryParse<ProsperoApplicationType>(request.ApplicationType, true, out var applicationType))
             throw new ArgumentException($"Unsupported application type: {request.ApplicationType}");
 
@@ -123,6 +159,7 @@ internal static class Program
             Passcode = string.IsNullOrWhiteSpace(request.Passcode) ? new string('0', 32) : request.Passcode.Trim(),
             Mode = mode,
             OutputFormat = outputFormat,
+            ImageProfile = imageProfile,
             ApplicationType = applicationType,
             GenerateParamJsonIfMissing = request.GenerateParamJsonIfMissing,
             FakeSignSelfModules = request.FakeSignSelfModules,
@@ -131,7 +168,7 @@ internal static class Program
         if (!string.IsNullOrWhiteSpace(request.ApplicationDrmType))
             options.ApplicationDrmType = request.ApplicationDrmType.Trim();
 
-        Emit(new { type = "log", message = $"LibProsperoPKG {EngineVersion}: building {mode} package..." });
+        Emit(new { type = "log", message = $"Packizard PKG Engine: building {mode} package ({imageProfile} image profile)..." });
         var result = ProsperoPackageBuilder.Build(options, message => Emit(new { type = "log", message }));
         foreach (var warning in result.Warnings)
             Emit(new { type = "warning", message = warning });
@@ -151,10 +188,49 @@ internal static class Program
                 });
             }
             if (!report.Accepted)
-                throw new InvalidDataException("The finished package failed LibProsperoPKG structural verification.");
+                throw new InvalidDataException("The finished package failed structural verification.");
         }
 
         Emit(new { type = "result", outputPath = result.OutputPath, warnings = result.Warnings });
+        return 0;
+    }
+
+    private static int Verify(string packagePath, string? expectedContentId)
+    {
+        Emit(new { type = "log", message = $"Verifying package: {packagePath}" });
+        ProsperoAcceptanceReport report = ProsperoPkgValidator.Validate(
+            packagePath,
+            string.IsNullOrWhiteSpace(expectedContentId) ? null : expectedContentId.Trim());
+        foreach (ProsperoAcceptanceCheck check in report.Checks)
+        {
+            Emit(new
+            {
+                type = check.Status == ProsperoCheckStatus.Warning ? "warning" : "log",
+                message = $"Verify [{check.Status}] {check.Name}: {check.Detail}",
+            });
+        }
+        if (!report.Accepted)
+            throw new InvalidDataException("Package verification failed.");
+        Emit(new { type = "result", outputPath = packagePath, accepted = true });
+        return 0;
+    }
+
+    private static int Extract(string packagePath, string outputDirectory, string passcode)
+    {
+        if (passcode.Length != 32)
+            throw new ArgumentException("PKG passcode must contain exactly 32 characters.");
+        Emit(new { type = "log", message = $"Extracting package to: {outputDirectory}" });
+        ProsperoPackageManifest manifest = ProsperoPackageExtractor.Extract(
+            packagePath,
+            outputDirectory,
+            passcode,
+            message => Emit(new { type = "log", message }));
+        Emit(new
+        {
+            type = "result",
+            outputPath = manifest.OutputDirectory,
+            extractedFileCount = manifest.ExtractedFileCount,
+        });
         return 0;
     }
 }

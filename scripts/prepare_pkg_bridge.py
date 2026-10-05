@@ -14,6 +14,13 @@ VERSION_FILE = ROOT / "bridge" / "LIBPROSPERO_VERSION"
 VENDOR_DIR = ROOT / "vendor" / "LibProsperoPKG"
 PROJECT = ROOT / "bridge" / "Packizard.PkgBridge" / "Packizard.PkgBridge.csproj"
 
+from libprospero_cnt_drm_profile import apply_cnt_drm_profile
+from libprospero_fih_extract_fix import apply_fih_extract_fix
+from libprospero_fih_profile import apply_fih_reference_profile
+from libprospero_naps_block_profile import apply_naps_block_profile
+from libprospero_standard_package_profile import apply_standard_package_profile
+from libprospero_warning_cleanup import apply_warning_cleanup
+
 
 def run(*args: str, cwd: Path | None = None) -> None:
     subprocess.run(args, cwd=cwd, check=True)
@@ -33,7 +40,6 @@ def ensure_upstream() -> str:
         run(git, "clone", "--filter=blob:none", "--no-checkout", UPSTREAM_URL, str(VENDOR_DIR))
         run(git, "checkout", "--detach", ref, cwd=VENDOR_DIR)
     else:
-        # Refuse silently drifting vendor trees. A git checkout is verified when available.
         git_dir = VENDOR_DIR / ".git"
         git = shutil.which("git")
         if git and git_dir.exists():
@@ -62,6 +68,21 @@ def main() -> int:
     else:
         ref = ensure_upstream()
 
+    try:
+        profile_changed = apply_fih_reference_profile(VENDOR_DIR)
+        # This fix owns the console/reference invariants 0x94 == 0x98 and
+        # 0xA0 == 0x90 * 0x10000 in addition to the plaintext data-first reader.
+        profile_changed |= apply_fih_extract_fix(VENDOR_DIR)
+        profile_changed |= apply_naps_block_profile(VENDOR_DIR)
+        profile_changed |= apply_cnt_drm_profile(VENDOR_DIR)
+        # Publishing Tools fix14 proved that forcing nwonly can pass host integrity checks and still
+        # fail console PPR authentication with EICV/0x80020060. Standard therefore becomes the normal
+        # package-image profile; nwonly remains available explicitly for diagnostics/A-B only.
+        profile_changed |= apply_standard_package_profile(VENDOR_DIR)
+        profile_changed |= apply_warning_cleanup(VENDOR_DIR)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+
     output = Path(args.output).resolve() if args.output else ROOT / "pkg_bridge" / args.rid
     if output.exists():
         shutil.rmtree(output)
@@ -79,6 +100,9 @@ def main() -> int:
         "true",
         "-p:PublishSingleFile=true",
         "-p:PublishTrimmed=false",
+        # Keep the integrated bridge warning-free. New C# warnings must be fixed,
+        # not silently accumulated in release builds.
+        "-p:TreatWarningsAsErrors=true",
         "-o",
         str(output),
     )
@@ -87,7 +111,11 @@ def main() -> int:
     if not executable.is_file():
         raise SystemExit(f"dotnet publish did not produce {executable}")
     version = VERSION_FILE.read_text(encoding="utf-8").strip()
-    print(f"Built Packizard.PkgBridge for {args.rid} with LibProsperoPKG {version} ({ref})")
+    profile_state = "applied" if profile_changed else "already applied"
+    print(
+        f"Built Packizard.PkgBridge for {args.rid} with LibProsperoPKG {version} ({ref}); "
+        f"Packizard reference profiles {profile_state}"
+    )
     return 0
 
 

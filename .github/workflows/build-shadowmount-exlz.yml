@@ -45,84 +45,84 @@ jobs:
           src = p.read_text()
           marker = 'bool sm_scan_tree_walk(const char *scan_root, const char *dir_path,\n'
           helper = r'''
-static bool sm_scan_tree_walk_exlz_deep(
-    const char *scan_root, const char *dir_path, unsigned int depth_from_root,
-    const sm_scan_tree_callbacks_t *callbacks, void *ctx) {
-  if (should_stop_requested() || runtime_sleep_mode_active())
-    return true;
-
-  if (depth_from_root > 0u &&
-      is_distinct_configured_scan_root(scan_root, dir_path)) {
-    return true;
-  }
-
-  DIR *d = opendir(dir_path);
-  if (!d)
-    return errno == ENOENT || errno == ENOTDIR;
-
-  bool scan_root_is_pfsc_mount_base =
-      is_pfsc_image_mount_base_or_child(scan_root);
-  bool allow_image_file_visits =
-      callbacks->on_image_file &&
-      (!path_matches_root_or_child(scan_root, IMAGE_MOUNT_BASE) ||
-       scan_root_is_pfsc_mount_base);
-
-  int read_error = 0;
-  for (;;) {
-    errno = 0;
-    struct dirent *entry = readdir(d);
-    if (!entry) {
-      read_error = errno;
-      break;
-    }
-    if (should_stop_requested() || runtime_sleep_mode_active()) {
-      closedir(d);
-      return true;
-    }
-    if (entry->d_name[0] == '.')
-      continue;
-
-    char full_path[MAX_PATH];
-    int written =
-        snprintf(full_path, sizeof(full_path), "%s/%s", dir_path, entry->d_name);
-    if (written < 0 || (size_t)written >= sizeof(full_path))
-      continue;
-
-    bool is_dir = false;
-    bool is_regular = false;
-    if (!classify_scan_tree_entry(full_path, entry->d_type, &is_dir,
-                                  &is_regular)) {
-      read_error = errno;
-      break;
-    }
-
-    if (allow_image_file_visits && is_regular) {
-      const char *dot = strrchr(entry->d_name, '.');
-      if (dot && strcasecmp(dot, ".exlz") == 0 &&
-          is_supported_image_file_path(full_path, entry->d_name)) {
-        if (!callbacks->on_image_file(full_path, entry->d_name,
-                                      depth_from_root + 1u, ctx)) {
-          closedir(d);
-          return false;
-        }
-      }
-    }
-
-    if (is_dir &&
-        !sm_scan_tree_walk_exlz_deep(scan_root, full_path,
-                                     depth_from_root + 1u, callbacks, ctx)) {
-      closedir(d);
-      return false;
-    }
-  }
-
-  if (closedir(d) != 0 && read_error == 0)
-    read_error = errno;
-  if (read_error != 0)
-    errno = read_error;
-  return read_error == 0;
-}
-
+          static bool sm_scan_tree_walk_exlz_deep(
+              const char *scan_root, const char *dir_path, unsigned int depth_from_root,
+              const sm_scan_tree_callbacks_t *callbacks, void *ctx) {
+            if (should_stop_requested() || runtime_sleep_mode_active())
+              return true;
+          
+            if (depth_from_root > 0u &&
+                is_distinct_configured_scan_root(scan_root, dir_path)) {
+              return true;
+            }
+          
+            DIR *d = opendir(dir_path);
+            if (!d)
+              return errno == ENOENT || errno == ENOTDIR;
+          
+            bool scan_root_is_pfsc_mount_base =
+                is_pfsc_image_mount_base_or_child(scan_root);
+            bool allow_image_file_visits =
+                callbacks->on_image_file &&
+                (!path_matches_root_or_child(scan_root, IMAGE_MOUNT_BASE) ||
+                 scan_root_is_pfsc_mount_base);
+          
+            int read_error = 0;
+            for (;;) {
+              errno = 0;
+              struct dirent *entry = readdir(d);
+              if (!entry) {
+                read_error = errno;
+                break;
+              }
+              if (should_stop_requested() || runtime_sleep_mode_active()) {
+                closedir(d);
+                return true;
+              }
+              if (entry->d_name[0] == '.')
+                continue;
+          
+              char full_path[MAX_PATH];
+              int written =
+                  snprintf(full_path, sizeof(full_path), "%s/%s", dir_path, entry->d_name);
+              if (written < 0 || (size_t)written >= sizeof(full_path))
+                continue;
+          
+              bool is_dir = false;
+              bool is_regular = false;
+              if (!classify_scan_tree_entry(full_path, entry->d_type, &is_dir,
+                                            &is_regular)) {
+                read_error = errno;
+                break;
+              }
+          
+              if (allow_image_file_visits && is_regular) {
+                const char *dot = strrchr(entry->d_name, '.');
+                if (dot && strcasecmp(dot, ".exlz") == 0 &&
+                    is_supported_image_file_path(full_path, entry->d_name)) {
+                  if (!callbacks->on_image_file(full_path, entry->d_name,
+                                                depth_from_root + 1u, ctx)) {
+                    closedir(d);
+                    return false;
+                  }
+                }
+              }
+          
+              if (is_dir &&
+                  !sm_scan_tree_walk_exlz_deep(scan_root, full_path,
+                                               depth_from_root + 1u, callbacks, ctx)) {
+                closedir(d);
+                return false;
+              }
+            }
+          
+            if (closedir(d) != 0 && read_error == 0)
+              read_error = errno;
+            if (read_error != 0)
+              errno = read_error;
+            return read_error == 0;
+          }
+          
 '''
           if marker not in src:
               raise SystemExit('sm_scan_tree_walk marker not found')

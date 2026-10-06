@@ -5,6 +5,7 @@ ROOT = Path(__file__).resolve().parents[1] / "ampr_emu"
 CONFIG = ROOT / "include" / "ampr_emu_config.h"
 PACK = ROOT / "src" / "ampr_emu_pack.cpp"
 HOOK = ROOT / "src" / "ampr_libkernel_hook.cpp"
+INDEX = ROOT / "src" / "ampr_emu_index.cpp"
 
 
 def replace_once(path: Path, old: str, new: str) -> None:
@@ -247,4 +248,270 @@ marker_insert = """    if (debugOut(AMPR_EMU_DEBUG_LOG_KERNEL_OUT_CHANNEL, line)
 """
 replace_once(HOOK, marker_anchor, marker_insert)
 
-print("Applied general AMPR backing AIO -> exact pread compatibility fallback + diagnostics")
+
+# Broad, bounded filesystem diagnostics. These capture all major hypotheses in
+# one runtime: path/open resolution, stat/fstat metadata, seek semantics,
+# synchronous read semantics, and the physical backing-pack open/stat details.
+index_open_anchor = """extern "C" int posix_open_emul(const char* path, int flags, ...) {
+    SceKernelMode mode = 0;
+"""
+index_open_insert = """extern "C" int posix_open_emul(const char* path, int flags, ...) {
+    static std::atomic<uint64_t> diagOpenSeq{0};
+    SceKernelMode mode = 0;
+"""
+replace_once(INDEX, index_open_anchor, index_open_insert)
+
+index_open_return_anchor = """    const int result = posix_open_impl(
+        path, flags, mode, &expectedIndexMiss);
+    return expectedIndexMiss
+        ? result
+        : ampr_klog_io_hook_path_result("open", path, result);
+}
+"""
+index_open_return_insert = """    const int result = posix_open_impl(
+        path, flags, mode, &expectedIndexMiss);
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    const uint64_t seq = diagOpenSeq.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (seq <= 192 || result < 0) {
+        AMPR_CRITICAL_LOGF(
+            "[AMPR_FS] open seq=%llu path=%s flags=0x%x mode=0%o rc=%d index_miss=%u errno=%d",
+            (unsigned long long)seq,
+            ampr_log_path_arg(path),
+            flags,
+            (unsigned)mode,
+            result,
+            expectedIndexMiss ? 1u : 0u,
+            errno);
+    }
+#endif
+    return expectedIndexMiss
+        ? result
+        : ampr_klog_io_hook_path_result("open", path, result);
+}
+"""
+replace_once(INDEX, index_open_return_anchor, index_open_return_insert)
+
+index_stat_anchor = """extern "C" int posix_stat_emul(const char* path, struct stat* sb) {
+    bool expectedIndexMiss = false;
+    const int result = posix_stat_impl(path, sb, &expectedIndexMiss);
+    return expectedIndexMiss
+        ? result
+        : ampr_klog_io_hook_path_result("stat", path, result);
+}
+"""
+index_stat_insert = """extern "C" int posix_stat_emul(const char* path, struct stat* sb) {
+    static std::atomic<uint64_t> diagStatSeq{0};
+    bool expectedIndexMiss = false;
+    const int result = posix_stat_impl(path, sb, &expectedIndexMiss);
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    const uint64_t seq = diagStatSeq.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (seq <= 192 || result < 0) {
+        AMPR_CRITICAL_LOGF(
+            "[AMPR_FS] stat seq=%llu path=%s rc=%d size=%lld mode=0%o index_miss=%u errno=%d",
+            (unsigned long long)seq,
+            ampr_log_path_arg(path),
+            result,
+            (long long)((result == 0 && sb) ? sb->st_size : -1),
+            (unsigned)((result == 0 && sb) ? sb->st_mode : 0),
+            expectedIndexMiss ? 1u : 0u,
+            errno);
+    }
+#endif
+    return expectedIndexMiss
+        ? result
+        : ampr_klog_io_hook_path_result("stat", path, result);
+}
+"""
+replace_once(INDEX, index_stat_anchor, index_stat_insert)
+
+pack_fstat_anchor = """extern "C" int posix_fstat_emul(int fd, struct stat* stat) {
+    bool handled = false;
+    const int rc = ampr_pack_try_fstat_fd(fd, stat, &handled);
+    if (handled) {
+        return ampr_klog_io_hook_result("fstat", posix_result_from_pack(rc));
+    }
+    KernelFstatFn fn = real_fstat();
+    return ampr_klog_io_hook_result(
+        "fstat", fn ? fn(fd, stat) : posix_missing_original<int>());
+}
+"""
+pack_fstat_insert = """extern "C" int posix_fstat_emul(int fd, struct stat* stat) {
+    static std::atomic<uint64_t> diagFstatSeq{0};
+    bool handled = false;
+    const int packRc = ampr_pack_try_fstat_fd(fd, stat, &handled);
+    int result = 0;
+    if (handled) {
+        result = posix_result_from_pack(packRc);
+    } else {
+        KernelFstatFn fn = real_fstat();
+        result = fn ? fn(fd, stat) : posix_missing_original<int>();
+    }
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    const uint64_t seq = diagFstatSeq.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (seq <= 192 || result < 0) {
+        AMPR_CRITICAL_LOGF(
+            "[AMPR_FS] fstat seq=%llu fd=%d handled=%u rc=%d size=%lld mode=0%o errno=%d",
+            (unsigned long long)seq, fd, handled ? 1u : 0u, result,
+            (long long)((result == 0 && stat) ? stat->st_size : -1),
+            (unsigned)((result == 0 && stat) ? stat->st_mode : 0),
+            errno);
+    }
+#endif
+    return ampr_klog_io_hook_result("fstat", result);
+}
+"""
+replace_once(PACK, pack_fstat_anchor, pack_fstat_insert)
+
+pack_lseek_anchor = """extern "C" off_t posix_lseek_emul(int fd, off_t offset, int whence) {
+    bool handled = false;
+    const off_t rc = ampr_pack_try_lseek_fd(fd, offset, whence, &handled);
+    if (handled) {
+        return ampr_klog_io_hook_result("lseek", posix_result_from_pack(rc));
+    }
+    KernelLseekFn fn = real_lseek();
+    return ampr_klog_io_hook_result(
+        "lseek",
+        fn ? fn(fd, offset, whence) : posix_missing_original<off_t>());
+}
+"""
+pack_lseek_insert = """extern "C" off_t posix_lseek_emul(int fd, off_t offset, int whence) {
+    static std::atomic<uint64_t> diagLseekSeq{0};
+    bool handled = false;
+    const off_t packRc = ampr_pack_try_lseek_fd(fd, offset, whence, &handled);
+    off_t result = 0;
+    if (handled) {
+        result = posix_result_from_pack(packRc);
+    } else {
+        KernelLseekFn fn = real_lseek();
+        result = fn ? fn(fd, offset, whence) : posix_missing_original<off_t>();
+    }
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    const uint64_t seq = diagLseekSeq.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (seq <= 192 || result < 0) {
+        AMPR_CRITICAL_LOGF(
+            "[AMPR_FS] lseek seq=%llu fd=%d off=%lld whence=%d handled=%u rc=%lld errno=%d",
+            (unsigned long long)seq, fd, (long long)offset, whence,
+            handled ? 1u : 0u, (long long)result, errno);
+    }
+#endif
+    return ampr_klog_io_hook_result("lseek", result);
+}
+"""
+replace_once(PACK, pack_lseek_anchor, pack_lseek_insert)
+
+pack_pread_anchor = """extern "C" ssize_t posix_pread_emul(int fd, void* buffer, size_t size,
+                                      off_t offset) {
+    bool handled = false;
+    const ssize_t rc = ampr_pack_try_pread_fd(
+        fd, buffer, size, offset, &handled);
+    if (handled) {
+        return ampr_klog_io_hook_result("pread", posix_result_from_pack(rc));
+    }
+    KernelPreadFn fn = real_pread();
+    return ampr_klog_io_hook_result(
+        "pread",
+        fn ? fn(fd, buffer, size, offset)
+           : posix_missing_original<ssize_t>());
+}
+"""
+pack_pread_insert = """extern "C" ssize_t posix_pread_emul(int fd, void* buffer, size_t size,
+                                      off_t offset) {
+    static std::atomic<uint64_t> diagPreadSeq{0};
+    bool handled = false;
+    const ssize_t packRc = ampr_pack_try_pread_fd(
+        fd, buffer, size, offset, &handled);
+    ssize_t result = 0;
+    if (handled) {
+        result = posix_result_from_pack(packRc);
+    } else {
+        KernelPreadFn fn = real_pread();
+        result = fn ? fn(fd, buffer, size, offset)
+                    : posix_missing_original<ssize_t>();
+    }
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    const uint64_t seq = diagPreadSeq.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (seq <= 256 || result < 0 || (result >= 0 && (size_t)result != size)) {
+        AMPR_CRITICAL_LOGF(
+            "[AMPR_FS] pread seq=%llu fd=%d off=%lld req=0x%llx handled=%u rc=%lld short=%u errno=%d",
+            (unsigned long long)seq, fd, (long long)offset,
+            (unsigned long long)size, handled ? 1u : 0u,
+            (long long)result,
+            (result >= 0 && (size_t)result != size) ? 1u : 0u,
+            errno);
+    }
+#endif
+    return ampr_klog_io_hook_result("pread", result);
+}
+"""
+replace_once(PACK, pack_pread_anchor, pack_pread_insert)
+
+pack_read_anchor = """extern "C" ssize_t posix_read_emul(int fd, void* buffer, size_t size) {
+    bool handled = false;
+    const ssize_t rc = ampr_pack_try_read_fd(fd, buffer, size, &handled);
+    if (handled) {
+        return ampr_klog_io_hook_result("read", posix_result_from_pack(rc));
+    }
+    KernelReadFn fn = real_read();
+    return ampr_klog_io_hook_result(
+        "read",
+        fn ? fn(fd, buffer, size) : posix_missing_original<ssize_t>());
+}
+"""
+pack_read_insert = """extern "C" ssize_t posix_read_emul(int fd, void* buffer, size_t size) {
+    static std::atomic<uint64_t> diagReadSeq{0};
+    bool handled = false;
+    const ssize_t packRc = ampr_pack_try_read_fd(fd, buffer, size, &handled);
+    ssize_t result = 0;
+    if (handled) {
+        result = posix_result_from_pack(packRc);
+    } else {
+        KernelReadFn fn = real_read();
+        result = fn ? fn(fd, buffer, size) : posix_missing_original<ssize_t>();
+    }
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    const uint64_t seq = diagReadSeq.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (seq <= 256 || result < 0 || (result >= 0 && (size_t)result != size)) {
+        AMPR_CRITICAL_LOGF(
+            "[AMPR_FS] read seq=%llu fd=%d req=0x%llx handled=%u rc=%lld short=%u errno=%d",
+            (unsigned long long)seq, fd, (unsigned long long)size,
+            handled ? 1u : 0u, (long long)result,
+            (result >= 0 && (size_t)result != size) ? 1u : 0u,
+            errno);
+    }
+#endif
+    return ampr_klog_io_hook_result("read", result);
+}
+"""
+replace_once(PACK, pack_read_anchor, pack_read_insert)
+
+backing_open_anchor = """    int fd = openFn(path, SCE_KERNEL_O_RDONLY | O_NONBLOCK,
+                    static_cast<SceKernelMode>(0));
+    if (fd >= 0) {
+        ampr_index_fd_pack_note_open();
+    }
+    SceKernelStat stat{};
+    const int statRc = fd >= 0 ? fstatFn(fd, &stat) : fd;
+"""
+backing_open_insert = """    int fd = openFn(path, SCE_KERNEL_O_RDONLY | O_NONBLOCK,
+                    static_cast<SceKernelMode>(0));
+    if (fd >= 0) {
+        ampr_index_fd_pack_note_open();
+    }
+    SceKernelStat stat{};
+    const int statRc = fd >= 0 ? fstatFn(fd, &stat) : fd;
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    AMPR_CRITICAL_LOGF(
+        "[AMPR_FS] backing.open path=%s flags=0x%x fd=%d stat_rc=%d size=%lld mode=0%o errno=%d",
+        path ? path : "(null)",
+        (unsigned)(SCE_KERNEL_O_RDONLY | O_NONBLOCK),
+        fd,
+        statRc,
+        (long long)((statRc == 0) ? stat.st_size : -1),
+        (unsigned)((statRc == 0) ? stat.st_mode : 0),
+        errno);
+#endif
+"""
+replace_once(PACK, backing_open_anchor, backing_open_insert)
+
+print("Applied full AMPR FS diagnostic coverage: open/stat/fstat/lseek/read/pread/backing + AIO fallback")
+

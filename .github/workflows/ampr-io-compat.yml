@@ -1,6 +1,12 @@
 name: AMPR Backing I/O Compatibility Build
 
 on:
+  pull_request:
+    branches:
+      - UAT
+    paths:
+      - "ci/ampr_emu_io_compat.patch"
+      - ".github/workflows/ampr-io-compat.yml"
   workflow_dispatch:
 
 permissions:

@@ -154,7 +154,11 @@ jobs:
 
           callback_marker = '''static void collect_scan_candidates_from_manual_root(
           '''
-          callback_code = '''static bool collect_candidate_exlz_image_visit(
+          callback_code = '''static bool collect_candidate_image_visit(
+              const char *image_path, const char *image_name,
+              unsigned int depth_from_root, void *ctx_ptr);
+
+          static bool collect_candidate_exlz_image_visit(
               const char *image_path, const char *image_name,
               unsigned int depth_from_root, void *ctx_ptr) {
             const char *dot = image_name ? strrchr(image_name, '.') : NULL;

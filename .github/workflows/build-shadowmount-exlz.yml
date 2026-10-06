@@ -137,10 +137,84 @@ jobs:
           if old_depth not in src:
               raise SystemExit('remaining_depth guard not found')
           p.write_text(src.replace(old_depth, new_depth, 1))
+
+          # 3) Custom scanpath= entries replace ShadowMount+'s normal defaults.
+          #    For EXLZ only, always search the built-in standard roots as well.
+          p = Path('src/sm_scan.c')
+          src = p.read_text()
+
+          array_marker = 'static scan_workspace_t g_scan_workspace;\n'
+          array_code = '''static const char *const k_exlz_standard_scan_paths[] =
+              SM_DEFAULT_SCAN_PATHS_INITIALIZER;
+
+          '''
+          if array_marker not in src:
+              raise SystemExit('scan workspace marker not found')
+          src = src.replace(array_marker, array_marker + '\n' + array_code, 1)
+
+          callback_marker = '''static void collect_scan_candidates_from_manual_root(
+          '''
+          callback_code = '''static bool collect_candidate_exlz_image_visit(
+              const char *image_path, const char *image_name,
+              unsigned int depth_from_root, void *ctx_ptr) {
+            const char *dot = image_name ? strrchr(image_name, '.') : NULL;
+            if (!dot || strcasecmp(dot, ".exlz") != 0)
+              return true;
+            return collect_candidate_image_visit(image_path, image_name,
+                                                 depth_from_root, ctx_ptr);
+          }
+
+          static void collect_exlz_from_standard_roots(
+              scan_candidate_t *candidates, int max_candidates,
+              int *candidate_count, const scan_app_db_context_t *app_db,
+              char discovered_param_roots[][MAX_PATH],
+              int *discovered_param_root_count, bool *unstable_found_out) {
+            collect_candidates_walk_ctx_t ctx = {
+                .candidates = candidates,
+                .max_candidates = max_candidates,
+                .candidate_count = candidate_count,
+                .app_db = app_db,
+                .discovered_param_roots = discovered_param_roots,
+                .discovered_param_root_count = discovered_param_root_count,
+                .manual_source_path = NULL,
+                .unstable_found_out = unstable_found_out,
+            };
+            sm_scan_tree_callbacks_t callbacks = {
+                .on_directory = NULL,
+                .on_image_file = collect_candidate_exlz_image_visit,
+            };
+
+            for (int i = 0; k_exlz_standard_scan_paths[i] != NULL; i++) {
+              if (should_stop_requested() || runtime_sleep_mode_active())
+                break;
+              const char *root = k_exlz_standard_scan_paths[i];
+              (void)sm_scan_tree_walk(root, root, 0u, 1u, &callbacks, &ctx);
+            }
+          }
+
+          '''
+          if callback_marker not in src:
+              raise SystemExit('manual-root marker not found')
+          src = src.replace(callback_marker, callback_code + callback_marker, 1)
+
+          loop_marker = '''  collect_scan_candidates_from_manual_list(
+              candidates, max_candidates, &candidate_count, &app_db,
+          '''
+          loop_insert = '''  collect_exlz_from_standard_roots(
+              candidates, max_candidates, &candidate_count, &app_db,
+              g_scan_workspace.discovered_param_roots,
+              &discovered_param_root_count, unstable_found_out);
+
+          '''
+          if loop_marker not in src:
+              raise SystemExit('manual-list call marker not found')
+          src = src.replace(loop_marker, loop_insert + loop_marker, 1)
+          p.write_text(src)
           PY
 
           grep -n -A4 -B2 'exlz' src/sm_image.c
           grep -n -A6 -B3 'sm_scan_tree_walk_exlz_deep' src/sm_scan_tree.c
+          grep -n -A8 -B3 'collect_exlz_from_standard_roots' src/sm_scan.c
 
       - name: Checkout pacbrew-repo
         uses: actions/checkout@v4

@@ -197,9 +197,7 @@ jobs:
               raise SystemExit('manual-root marker not found')
           src = src.replace(callback_marker, callback_code + callback_marker, 1)
 
-          loop_marker = '''  collect_scan_candidates_from_manual_list(
-              candidates, max_candidates, &candidate_count, &app_db,
-          '''
+          loop_marker = '  collect_scan_candidates_from_manual_list(\n'
           loop_insert = '''  collect_exlz_from_standard_roots(
               candidates, max_candidates, &candidate_count, &app_db,
               g_scan_workspace.discovered_param_roots,

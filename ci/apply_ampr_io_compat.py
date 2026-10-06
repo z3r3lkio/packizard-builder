@@ -57,7 +57,7 @@ static bool retry_backing_request_with_pread(
 #if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
     // Keep successful diagnostic output bounded while always logging failures.
     if (attempt <= 64) {
-        AMPR_CRITICAL_LOGF(
+        AMPR_KLOGF(
             "[AMPR_IO] fallback.enter seq=%llu fd=%d off=0x%llx req=0x%llx aio_ret=%lld prior=0x%x",
             (unsigned long long)attempt,
             request.fd,
@@ -75,7 +75,7 @@ static bool retry_backing_request_with_pread(
     }
     if (request.fd < 0 || !request.buf || request.offset < 0) {
         g_backingFallbackFailures.fetch_add(1, std::memory_order_relaxed);
-        AMPR_CRITICAL_LOGF(
+        AMPR_KLOGF(
             "[AMPR_IO] fallback.reject seq=%llu fd=%d off=0x%llx req=0x%llx aio_ret=%lld prior=0x%x",
             (unsigned long long)attempt,
             request.fd,
@@ -100,7 +100,7 @@ static bool retry_backing_request_with_pread(
         result.returnValue = static_cast<int64_t>(request.nbyte);
 #if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
         if (attempt <= 64) {
-            AMPR_CRITICAL_LOGF(
+            AMPR_KLOGF(
                 "[AMPR_IO] fallback.pread.ok seq=%llu ok=%llu fd=%d off=0x%llx req=0x%llx aio_ret=%lld prior=0x%x",
                 (unsigned long long)attempt,
                 (unsigned long long)successes,
@@ -116,7 +116,7 @@ static bool retry_backing_request_with_pread(
 
     const uint64_t failures =
         g_backingFallbackFailures.fetch_add(1, std::memory_order_relaxed) + 1;
-    AMPR_CRITICAL_LOGF(
+    AMPR_KLOGF(
         "[AMPR_IO] fallback.pread.fail seq=%llu fail=%llu fd=%d off=0x%llx req=0x%llx aio_ret=%lld prior=0x%x errno=%d",
         (unsigned long long)attempt,
         (unsigned long long)failures,
@@ -273,7 +273,7 @@ index_open_return_insert = """    const int result = posix_open_impl(
 #if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
     const uint64_t seq = diagOpenSeq.fetch_add(1, std::memory_order_relaxed) + 1;
     if (seq <= 192 || result < 0) {
-        AMPR_CRITICAL_LOGF(
+        AMPR_KLOGF(
             "[AMPR_FS] open seq=%llu path=%s flags=0x%x mode=0%o rc=%d index_miss=%u errno=%d",
             (unsigned long long)seq,
             ampr_log_path_arg(path),
@@ -306,7 +306,7 @@ index_stat_insert = """extern "C" int posix_stat_emul(const char* path, struct s
 #if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
     const uint64_t seq = diagStatSeq.fetch_add(1, std::memory_order_relaxed) + 1;
     if (seq <= 192 || result < 0) {
-        AMPR_CRITICAL_LOGF(
+        AMPR_KLOGF(
             "[AMPR_FS] stat seq=%llu path=%s rc=%d size=%lld mode=0%o index_miss=%u errno=%d",
             (unsigned long long)seq,
             ampr_log_path_arg(path),
@@ -349,7 +349,7 @@ pack_fstat_insert = """extern "C" int posix_fstat_emul(int fd, struct stat* stat
 #if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
     const uint64_t seq = diagFstatSeq.fetch_add(1, std::memory_order_relaxed) + 1;
     if (seq <= 192 || result < 0) {
-        AMPR_CRITICAL_LOGF(
+        AMPR_KLOGF(
             "[AMPR_FS] fstat seq=%llu fd=%d handled=%u rc=%d size=%lld mode=0%o errno=%d",
             (unsigned long long)seq, fd, handled ? 1u : 0u, result,
             (long long)((result == 0 && stat) ? stat->st_size : -1),
@@ -388,7 +388,7 @@ pack_lseek_insert = """extern "C" off_t posix_lseek_emul(int fd, off_t offset, i
 #if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
     const uint64_t seq = diagLseekSeq.fetch_add(1, std::memory_order_relaxed) + 1;
     if (seq <= 192 || result < 0) {
-        AMPR_CRITICAL_LOGF(
+        AMPR_KLOGF(
             "[AMPR_FS] lseek seq=%llu fd=%d off=%lld whence=%d handled=%u rc=%lld errno=%d",
             (unsigned long long)seq, fd, (long long)offset, whence,
             handled ? 1u : 0u, (long long)result, errno);
@@ -431,7 +431,7 @@ pack_pread_insert = """extern "C" ssize_t posix_pread_emul(int fd, void* buffer,
 #if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
     const uint64_t seq = diagPreadSeq.fetch_add(1, std::memory_order_relaxed) + 1;
     if (seq <= 256 || result < 0 || (result >= 0 && (size_t)result != size)) {
-        AMPR_CRITICAL_LOGF(
+        AMPR_KLOGF(
             "[AMPR_FS] pread seq=%llu fd=%d off=%lld req=0x%llx handled=%u rc=%lld short=%u errno=%d",
             (unsigned long long)seq, fd, (long long)offset,
             (unsigned long long)size, handled ? 1u : 0u,
@@ -471,7 +471,7 @@ pack_read_insert = """extern "C" ssize_t posix_read_emul(int fd, void* buffer, s
 #if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
     const uint64_t seq = diagReadSeq.fetch_add(1, std::memory_order_relaxed) + 1;
     if (seq <= 256 || result < 0 || (result >= 0 && (size_t)result != size)) {
-        AMPR_CRITICAL_LOGF(
+        AMPR_KLOGF(
             "[AMPR_FS] read seq=%llu fd=%d req=0x%llx handled=%u rc=%lld short=%u errno=%d",
             (unsigned long long)seq, fd, (unsigned long long)size,
             handled ? 1u : 0u, (long long)result,
@@ -500,7 +500,7 @@ backing_open_insert = """    int fd = openFn(path, SCE_KERNEL_O_RDONLY | O_NONBL
     SceKernelStat stat{};
     const int statRc = fd >= 0 ? fstatFn(fd, &stat) : fd;
 #if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
-    AMPR_CRITICAL_LOGF(
+    AMPR_KLOGF(
         "[AMPR_FS] backing.open path=%s flags=0x%x fd=%d stat_rc=%d size=%lld mode=0%o errno=%d",
         path ? path : "(null)",
         (unsigned)(SCE_KERNEL_O_RDONLY | O_NONBLOCK),

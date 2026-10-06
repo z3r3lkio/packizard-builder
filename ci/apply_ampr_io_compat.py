@@ -720,30 +720,21 @@ static ScePthread g_manifestLoaderThread{};
 static bool g_manifestLoaderStarted = false;
 
 static void* ampr_manifest_loader_main(void*) {
-    int probeRc = -1;
-    bool indexVisible = false;
-    for (unsigned attempt = 0;
-         attempt < 2000 &&
-         !g_manifestLoaderStop.load(std::memory_order_acquire);
-         ++attempt) {
-        probeRc = sceKernelOpen(AMPR_EMU_PACK_INDEX_PATH,
-                                SCE_KERNEL_O_RDONLY,
-                                static_cast<SceKernelMode>(0));
-        if (probeRc >= 0) {
-            (void)sceKernelClose(probeRc);
-            indexVisible = true;
-            break;
-        }
+    bool ready = false;
+    unsigned attempts = 0;
+    for (; attempts < 2000 &&
+           !g_manifestLoaderStop.load(std::memory_order_acquire);
+         ++attempts) {
+        // Do not probe through sceKernelOpen here: once libkernel hooks are
+        // installed that path can itself be intercepted. ensure_manifest_ready
+        // reaches load_manifest(), which uses real_open()/real_fstat()/real_pread
+        // and therefore tests the physical /app0 deployment directly.
+        ready = ampr_pack_ensure_manifest_ready_safe();
+        if (ready) break;
         (void)sceKernelUsleep(10000u);
     }
-    AMPR_KLOGF("[AMPR_INIT] async-index-visible=%u probe_rc=%d",
-               indexVisible ? 1u : 0u, probeRc);
-    if (indexVisible &&
-        !g_manifestLoaderStop.load(std::memory_order_acquire)) {
-        const bool ready = ampr_pack_ensure_manifest_ready_safe();
-        AMPR_KLOGF("[AMPR_INIT] async-manifest ready=%u",
-                   ready ? 1u : 0u);
-    }
+    AMPR_KLOGF("[AMPR_INIT] async-manifest ready=%u attempts=%u",
+               ready ? 1u : 0u, attempts + (ready ? 1u : 0u));
     return nullptr;
 }
 #endif

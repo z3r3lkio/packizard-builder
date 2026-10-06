@@ -241,6 +241,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          sed -i 's#https://ftp.gnu.org/gnu/libmicrohttpd/#https://ftpmirror.gnu.org/libmicrohttpd/#' pacbrew-repo/libmicrohttpd/PKGBUILD
           for pkg in openlibm json-c zlib libpng libmicrohttpd sqlite; do
             pushd "pacbrew-repo/$pkg"
             makepkg -c -f

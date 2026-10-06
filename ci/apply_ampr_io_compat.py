@@ -6,6 +6,7 @@ CONFIG = ROOT / "include" / "ampr_emu_config.h"
 PACK = ROOT / "src" / "ampr_emu_pack.cpp"
 HOOK = ROOT / "src" / "ampr_libkernel_hook.cpp"
 INDEX = ROOT / "src" / "ampr_emu_index.cpp"
+EXPORTS = ROOT / "src" / "sceampr_exports.cpp"
 
 
 def replace_once(path: Path, old: str, new: str) -> None:
@@ -702,6 +703,35 @@ s_open_new = """            "[AMPR_FS] open seq=%llu path=%s flags=0x%x mode=0%o
             errno);"""
 replace_once(INDEX, s_open, s_open_new)
 
-print("Applied exhaustive AMPR diagnostics: manifest/open/stat/reach/fstat/close/lseek/read/pread/getdents/getdirentries/backing/AIO")
+
+# Eagerly initialize the pack manifest during module_start. The EXLZ regression
+# shows /app0 directory enumeration occurring while manifest_ready=0, so the
+# directory overlay is bypassed and physical getdents wins. module_start is a
+# safe initialization boundary and should publish the manifest before game I/O.
+module_start_anchor = """int module_start(size_t args, const void* argp) {
+    (void)args;
+    (void)argp;
+    return amprInstallLibkernelHooks();
+}
+"""
+module_start_insert = """int module_start(size_t args, const void* argp) {
+    (void)args;
+    (void)argp;
+    const int hookRc = amprInstallLibkernelHooks();
+    if (hookRc != 0) {
+        AMPR_KLOGF("[AMPR_INIT] hooks rc=%d", hookRc);
+        return hookRc;
+    }
+#if AMPR_EMU_PACK_ENABLE
+    const bool manifestReady = ampr_pack_ensure_manifest_ready_safe();
+    AMPR_KLOGF("[AMPR_INIT] eager-manifest ready=%u", manifestReady ? 1u : 0u);
+#endif
+    return 0;
+}
+"""
+replace_once(EXPORTS, module_start_anchor, module_start_insert)
+
+print("Applied exhaustive AMPR diagnostics + eager manifest initialization")
+
 
 

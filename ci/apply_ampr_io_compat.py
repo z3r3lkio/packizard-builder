@@ -708,22 +708,24 @@ replace_once(INDEX, s_open, s_open_new)
 # shows /app0 directory enumeration occurring while manifest_ready=0, so the
 # directory overlay is bypassed and physical getdents wins. module_start is a
 # safe initialization boundary and should publish the manifest before game I/O.
-module_start_anchor = """int module_start(size_t args, const void* argp) {
+exports_include_anchor = """#include <new>\n"""\nexports_include_insert = """#include <new>\n#include <atomic>\n"""\nreplace_once(EXPORTS, exports_include_anchor, exports_include_insert)\n\nmodule_start_anchor = """int module_start(size_t args, const void* argp) {
     (void)args;
     (void)argp;
     return amprInstallLibkernelHooks();
 }
 """
-module_start_insert = """int module_start(size_t args, const void* argp) {
-    (void)args;
-    (void)argp;
-#if AMPR_EMU_PACK_ENABLE
-    // ShadowMount/EXLZ can expose the PRX before the rest of /app0 is fully
-    // visible. Probe the loose AMPR index before installing hooks so a transient
-    // ENOENT cannot poison the manifest state as permanently unavailable.
-    bool indexVisible = false;
+module_start_insert = """#if AMPR_EMU_PACK_ENABLE
+static std::atomic<bool> g_manifestLoaderStop{false};
+static ScePthread g_manifestLoaderThread{};
+static bool g_manifestLoaderStarted = false;
+
+static void* ampr_manifest_loader_main(void*) {
     int probeRc = -1;
-    for (unsigned attempt = 0; attempt < 300; ++attempt) {
+    bool indexVisible = false;
+    for (unsigned attempt = 0;
+         attempt < 2000 &&
+         !g_manifestLoaderStop.load(std::memory_order_acquire);
+         ++attempt) {
         probeRc = sceKernelOpen(AMPR_EMU_PACK_INDEX_PATH,
                                 SCE_KERNEL_O_RDONLY,
                                 static_cast<SceKernelMode>(0));
@@ -734,19 +736,37 @@ module_start_insert = """int module_start(size_t args, const void* argp) {
         }
         (void)sceKernelUsleep(10000u);
     }
-    AMPR_KLOGF("[AMPR_INIT] index-visible=%u probe_rc=%d",
+    AMPR_KLOGF("[AMPR_INIT] async-index-visible=%u probe_rc=%d",
                indexVisible ? 1u : 0u, probeRc);
+    if (indexVisible &&
+        !g_manifestLoaderStop.load(std::memory_order_acquire)) {
+        const bool ready = ampr_pack_ensure_manifest_ready_safe();
+        AMPR_KLOGF("[AMPR_INIT] async-manifest ready=%u",
+                   ready ? 1u : 0u);
+    }
+    return nullptr;
+}
 #endif
+
+int module_start(size_t args, const void* argp) {
+    (void)args;
+    (void)argp;
     const int hookRc = amprInstallLibkernelHooks();
     if (hookRc != 0) {
         AMPR_KLOGF("[AMPR_INIT] hooks rc=%d", hookRc);
         return hookRc;
     }
 #if AMPR_EMU_PACK_ENABLE
-    const bool manifestReady =
-        indexVisible && ampr_pack_ensure_manifest_ready_safe();
-    AMPR_KLOGF("[AMPR_INIT] delayed-manifest ready=%u",
-               manifestReady ? 1u : 0u);
+    g_manifestLoaderStop.store(false, std::memory_order_release);
+    const int threadRc = scePthreadCreate(
+        &g_manifestLoaderThread,
+        nullptr,
+        ampr_manifest_loader_main,
+        nullptr,
+        "ampr_manifest_loader");
+    g_manifestLoaderStarted = (threadRc == 0);
+    AMPR_KLOGF("[AMPR_INIT] async-loader thread_rc=%d started=%u",
+               threadRc, g_manifestLoaderStarted ? 1u : 0u);
 #endif
     return 0;
 }

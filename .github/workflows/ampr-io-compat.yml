@@ -1,4 +1,4 @@
-name: AMPR Backing I/O Compatibility Build
+name: AMPR Backing I/O Compatibility Debug Build
 
 on:
   pull_request:
@@ -91,7 +91,7 @@ jobs:
       - name: Upload patched runtime variants
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: libSceAmpr-io-compat-runtime-variants
+          name: libSceAmpr-io-compat-debug-runtime-variants
           path: |
             ampr_emu/out/payload-sdk-variants/*.prx
             ampr_emu/out/payload-sdk-variants/*.sprx

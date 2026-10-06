@@ -753,7 +753,32 @@ module_start_insert = """int module_start(size_t args, const void* argp) {
 """
 replace_once(EXPORTS, module_start_anchor, module_start_insert)
 
-print("Applied exhaustive AMPR diagnostics + delayed manifest initialization")
+
+# Make an initial ENOENT non-terminal. On EXLZ/ShadowMount the runtime can start
+# before /app0 is fully populated; treating that first miss as permanently
+# unavailable prevents AMPR from ever serving packed files later in the same run.
+pack_retry_anchor = """        if (current == kPackLoadReady) return true;
+        if (current == kPackLoadUnavailable || current == kPackLoadInvalid) return false;
+        uint32_t expected = kPackLoadUninitialized;
+"""
+pack_retry_insert = """        if (current == kPackLoadReady) return true;
+        if (current == kPackLoadInvalid) return false;
+        if (current == kPackLoadUnavailable) {
+            uint32_t unavailable = kPackLoadUnavailable;
+            if (!state.loadState.compare_exchange_strong(
+                    unavailable, kPackLoadUninitialized,
+                    std::memory_order_acq_rel,
+                    std::memory_order_acquire)) {
+                continue;
+            }
+            AMPR_KLOGF("[AMPR_INIT] manifest retry after transient unavailable");
+        }
+        uint32_t expected = kPackLoadUninitialized;
+"""
+replace_once(PACK, pack_retry_anchor, pack_retry_insert)
+
+print("Applied exhaustive AMPR diagnostics + transient manifest retry")
+
 
 
 

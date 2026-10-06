@@ -513,5 +513,195 @@ backing_open_insert = """    int fd = openFn(path, SCE_KERNEL_O_RDONLY | O_NONBL
 """
 replace_once(PACK, backing_open_anchor, backing_open_insert)
 
-print("Applied full AMPR FS diagnostic coverage: open/stat/fstat/lseek/read/pread/backing + AIO fallback")
+
+# Directory enumeration is critical for engines that discover content by scanning
+# /app0 subdirectories. Log both real and virtual/hybrid directory reads, including
+# returned names, and expose whether the AMPR manifest was resident at open time.
+getdents_anchor = """extern "C" int posix_getdents_emul(int fd, char* buffer, int size) {
+    bool handled = false;
+    const int rc = ampr_pack_try_getdents_fd(fd, buffer, size, &handled);
+    if (handled) {
+        return ampr_klog_io_hook_result("getdents",
+                                        posix_result_from_pack(rc));
+    }
+    KernelGetdentsFn fn = real_getdents();
+    return ampr_klog_io_hook_result(
+        "getdents",
+        fn ? fn(fd, buffer, size) : posix_missing_original<int>());
+}
+"""
+getdents_insert = """extern "C" int posix_getdents_emul(int fd, char* buffer, int size) {
+    static std::atomic<uint64_t> diagGetdentsSeq{0};
+    bool handled = false;
+    const int packRc = ampr_pack_try_getdents_fd(fd, buffer, size, &handled);
+    int result = 0;
+    if (handled) {
+        result = posix_result_from_pack(packRc);
+    } else {
+        KernelGetdentsFn fn = real_getdents();
+        result = fn ? fn(fd, buffer, size) : posix_missing_original<int>();
+    }
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    const uint64_t seq = diagGetdentsSeq.fetch_add(1, std::memory_order_relaxed) + 1;
+    AMPR_KLOGF("[AMPR_DIR] getdents seq=%llu fd=%d req=%d handled=%u rc=%d errno=%d",
+               (unsigned long long)seq, fd, size, handled ? 1u : 0u, result, errno);
+    if (result > 0 && buffer && seq <= 96) {
+        size_t input = 0;
+        unsigned emitted = 0;
+        while (input < (size_t)result && emitted < 32) {
+            const struct dirent* entry =
+                reinterpret_cast<const struct dirent*>(buffer + input);
+            const size_t recordSize = entry->d_reclen;
+            if (recordSize < offsetof(struct dirent, d_name) + 1u ||
+                recordSize > (size_t)result - input) {
+                AMPR_KLOGF("[AMPR_DIR] malformed seq=%llu at=%llu reclen=%llu remaining=%llu",
+                           (unsigned long long)seq,
+                           (unsigned long long)input,
+                           (unsigned long long)recordSize,
+                           (unsigned long long)((size_t)result - input));
+                break;
+            }
+            AMPR_KLOGF("[AMPR_DIR] entry seq=%llu n=%u type=%u namlen=%u name=%s",
+                       (unsigned long long)seq, emitted,
+                       (unsigned)entry->d_type, (unsigned)entry->d_namlen,
+                       entry->d_name);
+            input += recordSize;
+            ++emitted;
+        }
+    }
+#endif
+    return ampr_klog_io_hook_result("getdents", result);
+}
+"""
+replace_once(PACK, getdents_anchor, getdents_insert)
+
+getdir_anchor = """extern "C" int posix_getdirentries_emul(int fd, char* buffer, int size,
+                                          long* basep) {
+    bool handled = false;
+    const int rc = ampr_pack_try_getdirentries_fd(
+        fd, buffer, size, basep, &handled);
+    if (handled) {
+        return ampr_klog_io_hook_result("getdirentries",
+                                        posix_result_from_pack(rc));
+    }
+    KernelGetdirentriesFn fn = real_getdirentries();
+    return ampr_klog_io_hook_result(
+        "getdirentries",
+        fn ? fn(fd, buffer, size, basep) : posix_missing_original<int>());
+}
+"""
+getdir_insert = """extern "C" int posix_getdirentries_emul(int fd, char* buffer, int size,
+                                          long* basep) {
+    static std::atomic<uint64_t> diagGetdirSeq{0};
+    bool handled = false;
+    const int packRc = ampr_pack_try_getdirentries_fd(
+        fd, buffer, size, basep, &handled);
+    int result = 0;
+    if (handled) {
+        result = posix_result_from_pack(packRc);
+    } else {
+        KernelGetdirentriesFn fn = real_getdirentries();
+        result = fn ? fn(fd, buffer, size, basep) : posix_missing_original<int>();
+    }
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    const uint64_t seq = diagGetdirSeq.fetch_add(1, std::memory_order_relaxed) + 1;
+    AMPR_KLOGF("[AMPR_DIR] getdirentries seq=%llu fd=%d req=%d handled=%u rc=%d base=%lld errno=%d",
+               (unsigned long long)seq, fd, size, handled ? 1u : 0u, result,
+               (long long)(basep ? *basep : -1), errno);
+#endif
+    return ampr_klog_io_hook_result("getdirentries", result);
+}
+"""
+replace_once(PACK, getdir_anchor, getdir_insert)
+
+close_anchor = """extern "C" int posix_close_emul(int fd) {
+    bool handled = false;
+    const int rc = ampr_pack_try_close_fd(fd, &handled);
+    if (handled) {
+        return ampr_klog_io_hook_result("close", posix_result_from_pack(rc));
+    }
+    KernelCloseFn fn = real_close();
+    return ampr_klog_io_hook_result(
+        "close", fn ? fn(fd) : posix_missing_original<int>());
+}
+"""
+close_insert = """extern "C" int posix_close_emul(int fd) {
+    static std::atomic<uint64_t> diagCloseSeq{0};
+    bool handled = false;
+    const int packRc = ampr_pack_try_close_fd(fd, &handled);
+    int result = 0;
+    if (handled) {
+        result = posix_result_from_pack(packRc);
+    } else {
+        KernelCloseFn fn = real_close();
+        result = fn ? fn(fd) : posix_missing_original<int>();
+    }
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    const uint64_t seq = diagCloseSeq.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (seq <= 192 || result < 0) {
+        AMPR_KLOGF("[AMPR_FS] close seq=%llu fd=%d handled=%u rc=%d errno=%d",
+                   (unsigned long long)seq, fd, handled ? 1u : 0u, result, errno);
+    }
+#endif
+    return ampr_klog_io_hook_result("close", result);
+}
+"""
+replace_once(PACK, close_anchor, close_insert)
+
+reach_anchor = """extern "C" int sceKernelCheckReachability_emul(const char* path) {
+    bool expectedIndexMiss = false;
+    const int result = sceKernelCheckReachability_impl(
+        path, &expectedIndexMiss);
+    return expectedIndexMiss
+        ? result
+        : ampr_klog_io_hook_path_result(
+              "sceKernelCheckReachability", path, result);
+}
+"""
+reach_insert = """extern "C" int sceKernelCheckReachability_emul(const char* path) {
+    static std::atomic<uint64_t> diagReachSeq{0};
+    bool expectedIndexMiss = false;
+    const int result = sceKernelCheckReachability_impl(
+        path, &expectedIndexMiss);
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    const uint64_t seq = diagReachSeq.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (seq <= 192 || result < 0) {
+        AMPR_KLOGF("[AMPR_FS] reach seq=%llu path=%s rc=%d index_miss=%u manifest_ready=%u errno=%d",
+                   (unsigned long long)seq, ampr_log_path_arg(path), result,
+                   expectedIndexMiss ? 1u : 0u,
+                   ampr_pack_manifest_is_resident_ready() ? 1u : 0u,
+                   errno);
+    }
+#endif
+    return expectedIndexMiss
+        ? result
+        : ampr_klog_io_hook_path_result(
+              "sceKernelCheckReachability", path, result);
+}
+"""
+replace_once(INDEX, reach_anchor, reach_insert)
+
+# Add manifest readiness to every open trace; this is key to detecting a race
+# where a physical directory is exposed before the packed overlay is publishable.
+s_open = """            "[AMPR_FS] open seq=%llu path=%s flags=0x%x mode=0%o rc=%d index_miss=%u errno=%d",
+            (unsigned long long)seq,
+            ampr_log_path_arg(path),
+            flags,
+            (unsigned)mode,
+            result,
+            expectedIndexMiss ? 1u : 0u,
+            errno);"""
+s_open_new = """            "[AMPR_FS] open seq=%llu path=%s flags=0x%x mode=0%o rc=%d index_miss=%u manifest_ready=%u errno=%d",
+            (unsigned long long)seq,
+            ampr_log_path_arg(path),
+            flags,
+            (unsigned)mode,
+            result,
+            expectedIndexMiss ? 1u : 0u,
+            ampr_pack_manifest_is_resident_ready() ? 1u : 0u,
+            errno);"""
+replace_once(INDEX, s_open, s_open_new)
+
+print("Applied exhaustive AMPR diagnostics: manifest/open/stat/reach/fstat/close/lseek/read/pread/getdents/getdirentries/backing/AIO")
+
 

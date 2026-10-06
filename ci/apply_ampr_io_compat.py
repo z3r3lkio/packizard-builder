@@ -708,7 +708,14 @@ replace_once(INDEX, s_open, s_open_new)
 # shows /app0 directory enumeration occurring while manifest_ready=0, so the
 # directory overlay is bypassed and physical getdents wins. module_start is a
 # safe initialization boundary and should publish the manifest before game I/O.
-exports_include_anchor = """#include <new>\n"""\nexports_include_insert = """#include <new>\n#include <atomic>\n"""\nreplace_once(EXPORTS, exports_include_anchor, exports_include_insert)\n\nmodule_start_anchor = """int module_start(size_t args, const void* argp) {
+exports_include_anchor = """#include <new>
+"""
+exports_include_insert = """#include <new>
+#include <atomic>
+"""
+replace_once(EXPORTS, exports_include_anchor, exports_include_insert)
+
+module_start_anchor = """int module_start(size_t args, const void* argp) {
     (void)args;
     (void)argp;
     return amprInstallLibkernelHooks();

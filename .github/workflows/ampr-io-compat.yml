@@ -5,7 +5,7 @@ on:
     branches:
       - UAT
     paths:
-      - "ci/ampr_emu_io_compat.patch"
+      - "ci/apply_ampr_io_compat.py"
       - ".github/workflows/ampr-io-compat.yml"
   workflow_dispatch:
 
@@ -40,8 +40,7 @@ jobs:
 
       - name: Apply general backing-I/O compatibility patch
         run: |
-          git -C ampr_emu apply --check "$GITHUB_WORKSPACE/ci/ampr_emu_io_compat.patch"
-          git -C ampr_emu apply "$GITHUB_WORKSPACE/ci/ampr_emu_io_compat.patch"
+          python3 ci/apply_ampr_io_compat.py
           git -C ampr_emu diff --check
           git -C ampr_emu diff --stat
 

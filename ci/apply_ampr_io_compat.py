@@ -717,21 +717,43 @@ module_start_anchor = """int module_start(size_t args, const void* argp) {
 module_start_insert = """int module_start(size_t args, const void* argp) {
     (void)args;
     (void)argp;
+#if AMPR_EMU_PACK_ENABLE
+    // ShadowMount/EXLZ can expose the PRX before the rest of /app0 is fully
+    // visible. Probe the loose AMPR index before installing hooks so a transient
+    // ENOENT cannot poison the manifest state as permanently unavailable.
+    bool indexVisible = false;
+    int probeRc = -1;
+    for (unsigned attempt = 0; attempt < 300; ++attempt) {
+        probeRc = sceKernelOpen(AMPR_EMU_PACK_INDEX_PATH,
+                                SCE_KERNEL_O_RDONLY,
+                                static_cast<SceKernelMode>(0));
+        if (probeRc >= 0) {
+            (void)sceKernelClose(probeRc);
+            indexVisible = true;
+            break;
+        }
+        (void)sceKernelUsleep(10000u);
+    }
+    AMPR_KLOGF("[AMPR_INIT] index-visible=%u probe_rc=%d",
+               indexVisible ? 1u : 0u, probeRc);
+#endif
     const int hookRc = amprInstallLibkernelHooks();
     if (hookRc != 0) {
         AMPR_KLOGF("[AMPR_INIT] hooks rc=%d", hookRc);
         return hookRc;
     }
 #if AMPR_EMU_PACK_ENABLE
-    const bool manifestReady = ampr_pack_ensure_manifest_ready_safe();
-    AMPR_KLOGF("[AMPR_INIT] eager-manifest ready=%u", manifestReady ? 1u : 0u);
+    const bool manifestReady =
+        indexVisible && ampr_pack_ensure_manifest_ready_safe();
+    AMPR_KLOGF("[AMPR_INIT] delayed-manifest ready=%u",
+               manifestReady ? 1u : 0u);
 #endif
     return 0;
 }
 """
 replace_once(EXPORTS, module_start_anchor, module_start_insert)
 
-print("Applied exhaustive AMPR diagnostics + eager manifest initialization")
+print("Applied exhaustive AMPR diagnostics + delayed manifest initialization")
 
 
 

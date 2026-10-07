@@ -1142,7 +1142,65 @@ hybrid_dir_insert = """    size_t output = 0;
 """
 replace_once(PACK, hybrid_dir_anchor, hybrid_dir_insert)
 
-print("Applied exhaustive AMPR diagnostics + merged hybrid getdents view")
+
+# Cover the sceKernel* filesystem entry points as aliases of the POSIX hooks.
+# Some games enumerate through getdents and then open/stat/read files using
+# sceKernelOpen/sceKernelStat/sceKernelRead rather than the POSIX symbols.
+# Without these aliases packed-only files can be visible in directory listings
+# but still fail immediately when the game tries to access them.
+hook_alias_anchor = """    {"open", reinterpret_cast<void*>(&posix_open_emul), kHookMandatory, {}},
+    {"stat", reinterpret_cast<void*>(&posix_stat_emul), kHookMandatory, {}},
+"""
+hook_alias_insert = """    {"open", reinterpret_cast<void*>(&posix_open_emul), kHookMandatory, {}},
+    {"sceKernelOpen", reinterpret_cast<void*>(&posix_open_emul), kHookMandatory, {}},
+    {"stat", reinterpret_cast<void*>(&posix_stat_emul), kHookMandatory, {}},
+    {"sceKernelStat", reinterpret_cast<void*>(&posix_stat_emul), kHookMandatory, {}},
+"""
+replace_once(HOOK, hook_alias_anchor, hook_alias_insert)
+
+hook_fd_alias_anchor = """    {"sceKernelClose", reinterpret_cast<void*>(&sceKernelClose_emul), kHookMandatory, {}},
+    // sceKernelClose bypasses the public close thunk on current libkernel,
+    // therefore both entry points are required for virtual descriptors.
+    {"close", reinterpret_cast<void*>(&posix_close_emul), kHookMandatory, {}},
+    {"fstat", reinterpret_cast<void*>(&posix_fstat_emul), kHookMandatory, {}},
+"""
+hook_fd_alias_insert = """    {"sceKernelClose", reinterpret_cast<void*>(&sceKernelClose_emul), kHookMandatory, {}},
+    // sceKernelClose bypasses the public close thunk on current libkernel,
+    // therefore both entry points are required for virtual descriptors.
+    {"close", reinterpret_cast<void*>(&posix_close_emul), kHookMandatory, {}},
+    {"fstat", reinterpret_cast<void*>(&posix_fstat_emul), kHookMandatory, {}},
+    {"sceKernelFstat", reinterpret_cast<void*>(&posix_fstat_emul), kHookMandatory, {}},
+"""
+replace_once(HOOK, hook_fd_alias_anchor, hook_fd_alias_insert)
+
+hook_dir_alias_anchor = """    {"getdents", reinterpret_cast<void*>(&posix_getdents_emul), kHookMandatory, {}},
+    {"getdirentries", reinterpret_cast<void*>(&posix_getdirentries_emul), kHookMandatory, {}},
+"""
+hook_dir_alias_insert = """    {"getdents", reinterpret_cast<void*>(&posix_getdents_emul), kHookMandatory, {}},
+    {"sceKernelGetdents", reinterpret_cast<void*>(&posix_getdents_emul), kHookMandatory, {}},
+    {"getdirentries", reinterpret_cast<void*>(&posix_getdirentries_emul), kHookMandatory, {}},
+    {"sceKernelGetdirentries", reinterpret_cast<void*>(&posix_getdirentries_emul), kHookMandatory, {}},
+"""
+replace_once(HOOK, hook_dir_alias_anchor, hook_dir_alias_insert)
+
+hook_read_alias_anchor = """    {"pread", reinterpret_cast<void*>(&posix_pread_emul), kHookOptional, {}},
+    {"preadv", reinterpret_cast<void*>(&posix_preadv_emul), kHookOptional, {}},
+    {"read", reinterpret_cast<void*>(&posix_read_emul), kHookOptional, {}},
+    {"readv", reinterpret_cast<void*>(&posix_readv_emul), kHookOptional, {}},
+"""
+hook_read_alias_insert = """    {"pread", reinterpret_cast<void*>(&posix_pread_emul), kHookOptional, {}},
+    {"sceKernelPread", reinterpret_cast<void*>(&posix_pread_emul), kHookOptional, {}},
+    {"preadv", reinterpret_cast<void*>(&posix_preadv_emul), kHookOptional, {}},
+    {"sceKernelPreadv", reinterpret_cast<void*>(&posix_preadv_emul), kHookOptional, {}},
+    {"read", reinterpret_cast<void*>(&posix_read_emul), kHookOptional, {}},
+    {"sceKernelRead", reinterpret_cast<void*>(&posix_read_emul), kHookOptional, {}},
+    {"readv", reinterpret_cast<void*>(&posix_readv_emul), kHookOptional, {}},
+    {"sceKernelReadv", reinterpret_cast<void*>(&posix_readv_emul), kHookOptional, {}},
+"""
+replace_once(HOOK, hook_read_alias_anchor, hook_read_alias_insert)
+
+print("Applied exhaustive AMPR diagnostics + sceKernel filesystem aliases")
+
 
 
 

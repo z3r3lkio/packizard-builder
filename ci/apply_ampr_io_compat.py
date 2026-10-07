@@ -795,7 +795,128 @@ pack_retry_insert = """        if (current == kPackLoadReady) return true;
 """
 replace_once(PACK, pack_retry_anchor, pack_retry_insert)
 
-print("Applied exhaustive AMPR diagnostics + transient manifest retry")
+
+# Make manifest-loading failures visible even when normal AMPR debug logging is off.
+# This distinguishes transient ENOENT from stat/read/layout/profile/directory-index failures.
+manifest_open_anchor = """    const int fd = openFn(AMPR_EMU_PACK_INDEX_PATH,
+                          SCE_KERNEL_O_RDONLY, static_cast<SceKernelMode>(0));
+    if (fd < 0) {
+        const int openErrno = fd == -1 ? errno : ampr_posix_errno_from_sce(fd);
+"""
+manifest_open_insert = """    const int fd = openFn(AMPR_EMU_PACK_INDEX_PATH,
+                          SCE_KERNEL_O_RDONLY, static_cast<SceKernelMode>(0));
+    if (fd < 0) {
+        const int openErrno = fd == -1 ? errno : ampr_posix_errno_from_sce(fd);
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+        AMPR_KLOGF("[AMPR_MANIFEST] open.fail path=%s rc=%d errno=%d",
+                   AMPR_EMU_PACK_INDEX_PATH, fd, openErrno);
+#endif
+"""
+replace_once(PACK, manifest_open_anchor, manifest_open_insert)
+
+manifest_stat_anchor = """    if (statRc != 0 || stat.st_size < static_cast<off_t>(sizeof(AmprPackIndexHeader)) ||
+        static_cast<uint64_t>(stat.st_size) > AMPR_EMU_PACK_INDEX_MAX_BYTES) {
+        (void)closeFn(fd);
+"""
+manifest_stat_insert = """    if (statRc != 0 || stat.st_size < static_cast<off_t>(sizeof(AmprPackIndexHeader)) ||
+        static_cast<uint64_t>(stat.st_size) > AMPR_EMU_PACK_INDEX_MAX_BYTES) {
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+        AMPR_KLOGF("[AMPR_MANIFEST] stat.fail rc=%d size=%lld errno=%d",
+                   statRc, (long long)(statRc == 0 ? stat.st_size : -1), errno);
+#endif
+        (void)closeFn(fd);
+"""
+replace_once(PACK, manifest_stat_anchor, manifest_stat_insert)
+
+manifest_read_anchor = """    if (!memory || actual < bytes || !pread_exact(fd, memory, bytes, 0)) {
+        if (memory) (void)ampr_internal_amm_pool_free(memory, "apr.pack.index.fail");
+"""
+manifest_read_insert = """    if (!memory || actual < bytes || !pread_exact(fd, memory, bytes, 0)) {
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+        AMPR_KLOGF("[AMPR_MANIFEST] read.fail bytes=%llu alloc=%llu memory=%p errno=%d",
+                   (unsigned long long)bytes,
+                   (unsigned long long)actual,
+                   memory,
+                   errno);
+#endif
+        if (memory) (void)ampr_internal_amm_pool_free(memory, "apr.pack.index.fail");
+"""
+replace_once(PACK, manifest_read_anchor, manifest_read_insert)
+
+manifest_layout_anchor = """    if (!validate_manifest_layout(state, memory, bytes)) {
+        (void)ampr_internal_amm_pool_free(memory, "apr.pack.index.invalid");
+"""
+manifest_layout_insert = """    if (!validate_manifest_layout(state, memory, bytes)) {
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+        AMPR_KLOGF("[AMPR_MANIFEST] layout.invalid bytes=%llu",
+                   (unsigned long long)bytes);
+#endif
+        (void)ampr_internal_amm_pool_free(memory, "apr.pack.index.invalid");
+"""
+replace_once(PACK, manifest_layout_anchor, manifest_layout_insert)
+
+manifest_profile_anchor = """    if (!load_runtime_profile(state)) {
+        release_manifest_storage(state);
+        return false;
+    }
+"""
+manifest_profile_insert = """    if (!load_runtime_profile(state)) {
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+        AMPR_KLOGF("[AMPR_MANIFEST] profile.invalid-or-unreadable");
+#endif
+        release_manifest_storage(state);
+        return false;
+    }
+"""
+replace_once(PACK, manifest_profile_anchor, manifest_profile_insert)
+
+manifest_order_anchor = """    if (!build_packed_file_order(state)) {
+        AMPR_CRITICAL_LOGF("apr.pack.directory-index.fail files=%llu",
+"""
+manifest_order_insert = """    if (!build_packed_file_order(state)) {
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+        AMPR_KLOGF("[AMPR_MANIFEST] directory-index.fail files=%llu",
+                   (unsigned long long)state.header->fileCount);
+#endif
+        AMPR_CRITICAL_LOGF("apr.pack.directory-index.fail files=%llu",
+"""
+replace_once(PACK, manifest_order_anchor, manifest_order_insert)
+
+manifest_success_anchor = """    AMPR_LOGF("apr.pack.index.loaded path=%s files=%llu packed=%u loose=%llu chunks=%llu packs=%u bytes=0x%llx dirOverlay=%u processOpen=%u processAio=%u processSync=%u",
+"""
+manifest_success_insert = """#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    AMPR_KLOGF("[AMPR_MANIFEST] loaded path=%s files=%llu packed=%u chunks=%llu packs=%u bytes=%llu",
+               AMPR_EMU_PACK_INDEX_PATH,
+               (unsigned long long)state.header->fileCount,
+               state.packedFileCount,
+               (unsigned long long)state.header->chunkCount,
+               state.header->packCount,
+               (unsigned long long)bytes);
+#endif
+    AMPR_LOGF("apr.pack.index.loaded path=%s files=%llu packed=%u loose=%llu chunks=%llu packs=%u bytes=0x%llx dirOverlay=%u processOpen=%u processAio=%u processSync=%u",
+"""
+replace_once(PACK, manifest_success_anchor, manifest_success_insert)
+
+# Log retry state at low volume so a crash before the 20-second timeout still
+# tells us whether the async loader is alive and what it is observing.
+async_anchor = """        ready = ampr_pack_ensure_manifest_ready_safe();
+        if (ready) break;
+        (void)sceKernelUsleep(10000u);
+"""
+async_insert = """        ready = ampr_pack_ensure_manifest_ready_safe();
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+        if (attempts < 16 || ((attempts + 1u) % 100u) == 0u || ready) {
+            AMPR_KLOGF("[AMPR_INIT] async-attempt=%u ready=%u",
+                       attempts + 1u, ready ? 1u : 0u);
+        }
+#endif
+        if (ready) break;
+        (void)sceKernelUsleep(10000u);
+"""
+replace_once(EXPORTS, async_anchor, async_insert)
+
+print("Applied exhaustive AMPR diagnostics + manifest failure tracing")
+
 
 
 

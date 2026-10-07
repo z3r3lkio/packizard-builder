@@ -1316,23 +1316,6 @@ replace_once(HOOK, read_fallback_anchor, read_fallback_insert)
 # Trace the remaining file-discovery APIs that can run immediately after
 # directory enumeration. Normal AMPR debug macros are disabled in this build,
 # so use AMPR_KLOGF directly and keep the output low-volume.
-reach_anchor = """extern "C" int sceKernelCheckReachability_emul(const char* path) {
-    bool expectedIndexMiss = false;
-    const int result = sceKernelCheckReachability_impl(
-        path, &expectedIndexMiss);
-"""
-reach_insert = """extern "C" int sceKernelCheckReachability_emul(const char* path) {
-    bool expectedIndexMiss = false;
-    const int result = sceKernelCheckReachability_impl(
-        path, &expectedIndexMiss);
-#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
-    AMPR_KLOGF("[AMPR_CALL] reachability path=%s rc=%d expected_miss=%u",
-               path ? path : "(null)", result,
-               expectedIndexMiss ? 1u : 0u);
-#endif
-"""
-replace_once(INDEX, reach_anchor, reach_insert)
-
 apr_size_anchor = """extern "C" int sceKernelAprGetFileSize_emul(int fileId, uint64_t* outSize) {
     AMPR_TLOGF("lk.apr.getFileSize enter fileId=%d out=%p", fileId, outSize);
 """

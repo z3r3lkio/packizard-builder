@@ -1381,7 +1381,163 @@ apr_resolve_sizes_insert = """extern "C" int sceKernelAprResolveFilepathsToIdsAn
 """
 replace_once(APR_BRIDGE, apr_resolve_sizes_anchor, apr_resolve_sizes_insert)
 
-print("Applied exhaustive AMPR diagnostics + post-enumeration APR/reachability tracing")
+
+# Keep hybrid directory descriptors native. Returning a synthetic 0x67xxxxxx FD
+# for a directory that physically exists forces every libc/kernel consumer
+# (closedir, fstat, lseek, getdents, internal descriptor validation) through our
+# hooks. Some game/libc paths validate or consume the descriptor directly. Use
+# the real directory FD as the public handle and retain only the overlay state
+# internally. Purely virtual directories still use encoded virtual descriptors.
+
+hybrid_lookup_anchor = """static uint32_t allocate_virtual_directory_locked(
+    PackState& state, const char* path, uint16_t pathLength, int realFd,
+"""
+hybrid_lookup_insert = """static bool find_hybrid_directory_slot(PackState& state, int fd,
+                                       uint32_t* outIndex,
+                                       uint16_t* outGeneration) {
+    if (fd < 0) return false;
+    for (uint32_t index = 0;
+         index < AMPR_EMU_PACK_VIRTUAL_DIRECTORY_SLOTS;
+         ++index) {
+        AmprLockGuard lock(state.directoryMutexes[index]);
+        const VirtualDirectorySlot& slot = state.virtualDirectories[index];
+        if (slot.active && slot.realFd == fd) {
+            if (outIndex) *outIndex = index;
+            if (outGeneration) *outGeneration = slot.generation;
+            return true;
+        }
+    }
+    return false;
+}
+
+static uint32_t allocate_virtual_directory_locked(
+    PackState& state, const char* path, uint16_t pathLength, int realFd,
+"""
+replace_once(PACK, hybrid_lookup_anchor, hybrid_lookup_insert)
+
+hybrid_return_anchor = """    const int fd = encode_virtual_directory_fd(
+        slot, state.virtualDirectories[slot].generation);
+    state.stats.directoryOpens.fetch_add(1, std::memory_order_relaxed);
+    if (realFd >= 0) {
+        state.stats.directoryHybridOpens.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        state.stats.directoryVirtualOpens.fetch_add(1, std::memory_order_relaxed);
+    }
+#if AMPR_EMU_PACK_IO_LOG
+    AMPR_LOGF("apr.pack.dir.open path=%s vfd=0x%x realFd=%d mode=%s range=%u..%u",
+              normalized, (unsigned)fd, realFd,
+              realFd >= 0 ? "hybrid" : "virtual", rangeBegin, rangeEnd);
+#endif
+    return fd;
+"""
+hybrid_return_insert = """    const int fd = realFd >= 0
+        ? realFd
+        : encode_virtual_directory_fd(
+              slot, state.virtualDirectories[slot].generation);
+    state.stats.directoryOpens.fetch_add(1, std::memory_order_relaxed);
+    if (realFd >= 0) {
+        state.stats.directoryHybridOpens.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        state.stats.directoryVirtualOpens.fetch_add(1, std::memory_order_relaxed);
+    }
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    AMPR_KLOGF("[AMPR_DIR] open.public path=%s fd=%d realfd=%d mode=%s slot=%u",
+               normalized, fd, realFd,
+               realFd >= 0 ? "hybrid-native-fd" : "virtual",
+               slot);
+#endif
+#if AMPR_EMU_PACK_IO_LOG
+    AMPR_LOGF("apr.pack.dir.open path=%s vfd=0x%x realFd=%d mode=%s range=%u..%u",
+              normalized, (unsigned)fd, realFd,
+              realFd >= 0 ? "hybrid-native-fd" : "virtual", rangeBegin, rangeEnd);
+#endif
+    return fd;
+"""
+replace_once(PACK, hybrid_return_anchor, hybrid_return_insert)
+
+close_anchor = """    uint32_t index = 0;
+    uint16_t generation = 0;
+    if (decode_virtual_directory_fd(fd, &index, &generation)) {
+"""
+close_insert = """    uint32_t index = 0;
+    uint16_t generation = 0;
+    const bool hybridDirectory =
+        find_hybrid_directory_slot(state, fd, &index, &generation);
+    if (hybridDirectory ||
+        decode_virtual_directory_fd(fd, &index, &generation)) {
+"""
+replace_once(PACK, close_anchor, close_insert)
+
+fstat_anchor = """    uint32_t index = 0;
+    uint16_t generation = 0;
+    if (decode_virtual_directory_fd(fd, &index, &generation)) {
+        if (handled) *handled = true;
+"""
+fstat_insert = """    uint32_t index = 0;
+    uint16_t generation = 0;
+    const bool hybridDirectory =
+        find_hybrid_directory_slot(state, fd, &index, &generation);
+    if (hybridDirectory ||
+        decode_virtual_directory_fd(fd, &index, &generation)) {
+        if (handled) *handled = true;
+"""
+replace_once(PACK, fstat_anchor, fstat_insert)
+
+dirread_anchor = """    uint32_t index = 0;
+    uint16_t generation = 0;
+    if (!decode_virtual_directory_fd(fd, &index, &generation)) {
+        return SCE_KERNEL_ERROR_EBADF;
+    }
+"""
+dirread_insert = """    uint32_t index = 0;
+    uint16_t generation = 0;
+    PackState& state = pack_state();
+    if (!find_hybrid_directory_slot(state, fd, &index, &generation) &&
+        !decode_virtual_directory_fd(fd, &index, &generation)) {
+        return SCE_KERNEL_ERROR_EBADF;
+    }
+"""
+replace_once(PACK, dirread_anchor, dirread_insert)
+
+# The original function declares state after descriptor decode; the replacement
+# above declares it earlier.
+dirread_state_anchor = """    PackState& state = pack_state();
+    KernelGetdentsFn getdentsFn = real_getdents();
+"""
+dirread_state_insert = """    KernelGetdentsFn getdentsFn = real_getdents();
+"""
+replace_once(PACK, dirread_state_anchor, dirread_state_insert)
+
+lseek_anchor = """    uint32_t index = 0;
+    uint16_t generation = 0;
+    if (decode_virtual_directory_fd(fd, &index, &generation)) {
+        if (handled) *handled = true;
+"""
+lseek_insert = """    uint32_t index = 0;
+    uint16_t generation = 0;
+    const bool hybridDirectory =
+        find_hybrid_directory_slot(state, fd, &index, &generation);
+    if (hybridDirectory ||
+        decode_virtual_directory_fd(fd, &index, &generation)) {
+        if (handled) *handled = true;
+"""
+replace_once(PACK, lseek_anchor, lseek_insert)
+
+isvdir_anchor = """    uint32_t slot = 0;
+    uint16_t generation = 0;
+    if (!decode_virtual_directory_fd(fd, &slot, &generation)) return false;
+    PackState& state = pack_state();
+"""
+isvdir_insert = """    uint32_t slot = 0;
+    uint16_t generation = 0;
+    PackState& state = pack_state();
+    if (!find_hybrid_directory_slot(state, fd, &slot, &generation) &&
+        !decode_virtual_directory_fd(fd, &slot, &generation)) return false;
+"""
+replace_once(PACK, isvdir_anchor, isvdir_insert)
+
+print("Applied exhaustive AMPR diagnostics + native FDs for hybrid directories")
+
 
 
 

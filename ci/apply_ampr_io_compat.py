@@ -1718,6 +1718,182 @@ resolve_done_insert = """    const int rc = sce::Ampr::Emu::aprResolveFilepathsT
 """
 replace_once(APR_BRIDGE, resolve_done_anchor, resolve_done_insert)
 
+
+# Trace the APR command-buffer path immediately after file resolution. This is
+# diagnostic-only and uses the always-visible kernel log so a single run shows
+# whether the game reaches measure/append/submit/wait before aborting.
+apr_read_export_anchor = """extern "C" AMPR_EXPORT int64_t sceAmprAprCommandBufferReadFile(
+        sce::Ampr::AprCommandBuffer* self,
+        __SceAprMapState* mapState,
+        __SceAprScatterGatherState* scatterGatherState,
+        uint32_t fileId,
+        void* buffer,
+        uint64_t length,
+        uint64_t offset) {
+    ampr_export_vlogf("[apr-cb-30] sceAmprAprCommandBufferReadFile enter this=%p hiddenA2=%p hiddenA3=%p fileId=%u buffer=%p len=0x%llx off=0x%llx",
+"""
+apr_read_export_insert = """extern "C" AMPR_EXPORT int64_t sceAmprAprCommandBufferReadFile(
+        sce::Ampr::AprCommandBuffer* self,
+        __SceAprMapState* mapState,
+        __SceAprScatterGatherState* scatterGatherState,
+        uint32_t fileId,
+        void* buffer,
+        uint64_t length,
+        uint64_t offset) {
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    AMPR_KLOGF("[AMPR_CALL] apr.cb.read enter fileId=%u len=0x%llx off=0x%llx buf=%p",
+               fileId, (unsigned long long)length,
+               (unsigned long long)offset, buffer);
+#endif
+    ampr_export_vlogf("[apr-cb-30] sceAmprAprCommandBufferReadFile enter this=%p hiddenA2=%p hiddenA3=%p fileId=%u buffer=%p len=0x%llx off=0x%llx",
+"""
+replace_once(EXPORTS, apr_read_export_anchor, apr_read_export_insert)
+
+apr_read_leave_anchor = """    const int64_t rc = self->readFile((SceAprFileId)fileId, buffer, length, offset);
+    const int64_t outRc = ampr_export_rc32(rc);
+    ampr_export_vlogf("[apr-cb-31] sceAmprAprCommandBufferReadFile leave this=%p rc=0x%llx",
+                     (void*)self, (unsigned long long)outRc);
+    return outRc;
+}
+"""
+apr_read_leave_insert = """    const int64_t rc = self->readFile((SceAprFileId)fileId, buffer, length, offset);
+    const int64_t outRc = ampr_export_rc32(rc);
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    AMPR_KLOGF("[AMPR_CALL] apr.cb.read done fileId=%u rc=0x%llx",
+               fileId, (unsigned long long)outRc);
+#endif
+    ampr_export_vlogf("[apr-cb-31] sceAmprAprCommandBufferReadFile leave this=%p rc=0x%llx",
+                     (void*)self, (unsigned long long)outRc);
+    return outRc;
+}
+"""
+replace_once(EXPORTS, apr_read_leave_anchor, apr_read_leave_insert)
+
+measure_read_anchor = """extern "C" AMPR_EXPORT int64_t sceAmprMeasureCommandSizeReadFile(SceAprFileId fileId, void* buffer, uint64_t length, uint64_t offset) {
+    if (sce::Ampr::Emu::aprValidateReadArgs(buffer, length, offset) != 0) {
+        return ampr_measure_einval();
+    }
+"""
+measure_read_insert = """extern "C" AMPR_EXPORT int64_t sceAmprMeasureCommandSizeReadFile(SceAprFileId fileId, void* buffer, uint64_t length, uint64_t offset) {
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    AMPR_KLOGF("[AMPR_CALL] apr.measureRead fileId=%u len=0x%llx off=0x%llx buf=%p",
+               (unsigned)fileId, (unsigned long long)length,
+               (unsigned long long)offset, buffer);
+#endif
+    if (sce::Ampr::Emu::aprValidateReadArgs(buffer, length, offset) != 0) {
+        return ampr_measure_einval();
+    }
+"""
+replace_once(EXPORTS, measure_read_anchor, measure_read_insert)
+
+submit_anchor = """extern "C" int sceKernelAprSubmitCommandBuffer_emul(sce::Ampr::AprCommandBuffer* commandBuffer, uint32_t prio) {
+    return ampr_klog_io_hook_result(
+        "sceKernelAprSubmitCommandBuffer",
+        ampr_libkernel_return_from_sce(
+            apr_submit_lowlevel_sce(commandBuffer, prio, nullptr, nullptr, AprSubmitMode::kSubmit, "submit")));
+}
+"""
+submit_insert = """extern "C" int sceKernelAprSubmitCommandBuffer_emul(sce::Ampr::AprCommandBuffer* commandBuffer, uint32_t prio) {
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    AMPR_KLOGF("[AMPR_CALL] apr.submit enter cb=%p prio=%u", commandBuffer, (unsigned)prio);
+#endif
+    const int out = ampr_klog_io_hook_result(
+        "sceKernelAprSubmitCommandBuffer",
+        ampr_libkernel_return_from_sce(
+            apr_submit_lowlevel_sce(commandBuffer, prio, nullptr, nullptr, AprSubmitMode::kSubmit, "submit")));
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    AMPR_KLOGF("[AMPR_CALL] apr.submit done rc=0x%x", out);
+#endif
+    return out;
+}
+"""
+replace_once(APR_BRIDGE, submit_anchor, submit_insert)
+
+submit_result_anchor = """extern "C" int sceKernelAprSubmitCommandBufferAndGetResult_emul(sce::Ampr::AprCommandBuffer* commandBuffer,
+                                                                 uint32_t prio,
+                                                                 SceAprResultBuffer* result,
+                                                                 SceAprSubmitId* id) {
+    return ampr_klog_io_hook_result(
+        "sceKernelAprSubmitCommandBufferAndGetResult",
+        ampr_libkernel_return_from_sce(
+            apr_submit_lowlevel_sce(commandBuffer, prio, result, id, AprSubmitMode::kSubmitAndGetResult, "submit_result")));
+}
+"""
+submit_result_insert = """extern "C" int sceKernelAprSubmitCommandBufferAndGetResult_emul(sce::Ampr::AprCommandBuffer* commandBuffer,
+                                                                 uint32_t prio,
+                                                                 SceAprResultBuffer* result,
+                                                                 SceAprSubmitId* id) {
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    AMPR_KLOGF("[AMPR_CALL] apr.submitResult enter cb=%p prio=%u", commandBuffer, (unsigned)prio);
+#endif
+    const int out = ampr_klog_io_hook_result(
+        "sceKernelAprSubmitCommandBufferAndGetResult",
+        ampr_libkernel_return_from_sce(
+            apr_submit_lowlevel_sce(commandBuffer, prio, result, id, AprSubmitMode::kSubmitAndGetResult, "submit_result")));
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    AMPR_KLOGF("[AMPR_CALL] apr.submitResult done rc=0x%x id=%u result=0x%x",
+               out, id ? (unsigned)*id : 0u, result ? result->result : 0);
+#endif
+    return out;
+}
+"""
+replace_once(APR_BRIDGE, submit_result_anchor, submit_result_insert)
+
+submit_id_anchor = """extern "C" int sceKernelAprSubmitCommandBufferAndGetId_emul(sce::Ampr::AprCommandBuffer* commandBuffer,
+                                                            uint32_t prio,
+                                                            SceAprSubmitId* id) {
+    return ampr_klog_io_hook_result(
+        "sceKernelAprSubmitCommandBufferAndGetId",
+        ampr_libkernel_return_from_sce(
+            apr_submit_lowlevel_sce(commandBuffer, prio, nullptr, id, AprSubmitMode::kSubmitAndGetId, "submit_id")));
+}
+"""
+submit_id_insert = """extern "C" int sceKernelAprSubmitCommandBufferAndGetId_emul(sce::Ampr::AprCommandBuffer* commandBuffer,
+                                                            uint32_t prio,
+                                                            SceAprSubmitId* id) {
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    AMPR_KLOGF("[AMPR_CALL] apr.submitId enter cb=%p prio=%u", commandBuffer, (unsigned)prio);
+#endif
+    const int out = ampr_klog_io_hook_result(
+        "sceKernelAprSubmitCommandBufferAndGetId",
+        ampr_libkernel_return_from_sce(
+            apr_submit_lowlevel_sce(commandBuffer, prio, nullptr, id, AprSubmitMode::kSubmitAndGetId, "submit_id")));
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    AMPR_KLOGF("[AMPR_CALL] apr.submitId done rc=0x%x id=%u",
+               out, id ? (unsigned)*id : 0u);
+#endif
+    return out;
+}
+"""
+replace_once(APR_BRIDGE, submit_id_anchor, submit_id_insert)
+
+wait_anchor = """extern "C" int sceKernelAprWaitCommandBuffer_emul(SceAprSubmitId id) {
+    return ampr_klog_io_hook_result(
+        "sceKernelAprWaitCommandBuffer",
+        apr_wait_lowlevel(id,
+                          kAmprLibkernelHook_sceKernelAprWaitCommandBuffer,
+                          "apr-wait"));
+}
+"""
+wait_insert = """extern "C" int sceKernelAprWaitCommandBuffer_emul(SceAprSubmitId id) {
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    AMPR_KLOGF("[AMPR_CALL] apr.wait enter id=%u", (unsigned)id);
+#endif
+    const int out = ampr_klog_io_hook_result(
+        "sceKernelAprWaitCommandBuffer",
+        apr_wait_lowlevel(id,
+                          kAmprLibkernelHook_sceKernelAprWaitCommandBuffer,
+                          "apr-wait"));
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    AMPR_KLOGF("[AMPR_CALL] apr.wait done id=%u rc=0x%x", (unsigned)id, out);
+#endif
+    return out;
+}
+"""
+replace_once(APR_BRIDGE, wait_anchor, wait_insert)
+
+print("Applied APR command-buffer transition diagnostics")
+
 print("Applied exhaustive AMPR diagnostics + APR physical AIO pread fallback")
 
 

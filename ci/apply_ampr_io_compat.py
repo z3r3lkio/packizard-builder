@@ -715,6 +715,13 @@ exports_include_insert = """#include <new>
 """
 replace_once(EXPORTS, exports_include_anchor, exports_include_insert)
 
+exports_runtime_mem_anchor = """#include "ampr_emu_log.h"
+"""
+exports_runtime_mem_insert = """#include "ampr_emu_log.h"
+#include "ampr_emu_runtime_memory.h"
+"""
+replace_once(EXPORTS, exports_runtime_mem_anchor, exports_runtime_mem_insert)
+
 module_start_anchor = """int module_start(size_t args, const void* argp) {
     (void)args;
     (void)argp;
@@ -729,13 +736,24 @@ static bool g_manifestLoaderStarted = false;
 static void* ampr_manifest_loader_main(void*) {
     bool ready = false;
     unsigned attempts = 0;
+
+    // load_manifest() allocates the whole manifest from AMPR's internal pool.
+    // This async thread can run before the normal app0-index path initializes
+    // that pool, which produces memory=null/alloc=0 and poisons loadState as
+    // invalid. Initialize the shared static pool first.
+    const bool poolReady =
+        ampr_internal_amm_pool_prepare_static_storage("async-manifest.loader");
+    AMPR_KLOGF("[AMPR_INIT] async-pool ready=%u",
+               poolReady ? 1u : 0u);
+    if (!poolReady) {
+        return nullptr;
+    }
+
     for (; attempts < 2000 &&
            !g_manifestLoaderStop.load(std::memory_order_acquire);
          ++attempts) {
-        // Do not probe through sceKernelOpen here: once libkernel hooks are
-        // installed that path can itself be intercepted. ensure_manifest_ready
-        // reaches load_manifest(), which uses real_open()/real_fstat()/real_pread
-        // and therefore tests the physical /app0 deployment directly.
+        // ensure_manifest_ready reaches load_manifest(), which uses
+        // real_open()/real_fstat()/real_pread for the physical backing.
         ready = ampr_pack_ensure_manifest_ready_safe();
         if (ready) break;
         (void)sceKernelUsleep(10000u);

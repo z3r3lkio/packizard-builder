@@ -9,6 +9,7 @@ HOOK_HEADER = ROOT / "include" / "ampr_libkernel_hook.h"
 INDEX = ROOT / "src" / "ampr_emu_index.cpp"
 EXPORTS = ROOT / "src" / "sceampr_exports.cpp"
 APR_BRIDGE = ROOT / "src" / "ampr_emu_apr_kernel_bridge.cpp"
+APR_REACTOR = ROOT / "src" / "ampr_emu_apr_reactor.cpp"
 
 
 def replace_once(path: Path, old: str, new: str) -> None:
@@ -1565,7 +1566,160 @@ isvdir_insert = """    uint32_t slot = 0;
 """
 replace_once(PACK, isvdir_anchor, isvdir_insert)
 
-print("Applied exhaustive AMPR diagnostics + native FDs for hybrid directories")
+
+# APR loose-file reads use the native AIO backend independently from backing-pack
+# reads. Mounted image filesystems can complete those AIO requests with an error
+# or a short result even when ordinary pread succeeds. Retry only completed,
+# non-cancelled physical-file reads synchronously after the AIO request has been
+# deleted. Packed virtual FDs remain on the existing pack path.
+reactor_include_anchor = """#include "ampr_emu_index.h"
+#include "ampr_emu_kernel_memory.h"
+"""
+reactor_include_insert = """#include "ampr_emu_index.h"
+#include "ampr_emu_kernel_file.h"
+#include "ampr_emu_kernel_memory.h"
+"""
+replace_once(APR_REACTOR, reactor_include_anchor, reactor_include_insert)
+
+reactor_helper_anchor = """static int apr_aio_result_to_sce(int64_t value) {
+    if (value >= 0) return 0;
+    const int rc = static_cast<int>(value);
+    const uint32_t u = static_cast<uint32_t>(rc);
+    if ((u & 0xFFFF0000u) == 0x80020000u) {
+        return rc;
+    }
+    const int err = (value > -256) ? static_cast<int>(-value) : EIO;
+    return ampr_sce_errno_from_posix(err);
+}
+"""
+reactor_helper_insert = """static int apr_aio_result_to_sce(int64_t value) {
+    if (value >= 0) return 0;
+    const int rc = static_cast<int>(value);
+    const uint32_t u = static_cast<uint32_t>(rc);
+    if ((u & 0xFFFF0000u) == 0x80020000u) {
+        return rc;
+    }
+    const int err = (value > -256) ? static_cast<int>(-value) : EIO;
+    return ampr_sce_errno_from_posix(err);
+}
+
+static bool apr_physical_pread_exact(int fd, void* buffer,
+                                     uint64_t length, uint64_t offset) {
+    if (fd < 0 || !buffer ||
+        offset > static_cast<uint64_t>((std::numeric_limits<off_t>::max)()) ||
+        length > static_cast<uint64_t>(SIZE_MAX) ||
+        length > static_cast<uint64_t>((std::numeric_limits<off_t>::max)()) - offset) {
+        return false;
+    }
+    uint8_t* out = static_cast<uint8_t*>(buffer);
+    uint64_t done = 0;
+    while (done < length) {
+        const uint64_t remaining = length - done;
+        const size_t want = static_cast<size_t>(
+            (std::min)(remaining, static_cast<uint64_t>(1024u * 1024u)));
+        const ssize_t rc = ampr_real_physical_pread(
+            fd, out + static_cast<size_t>(done), want,
+            static_cast<off_t>(offset + done));
+        if (rc <= 0 || static_cast<size_t>(rc) > want) {
+            return false;
+        }
+        done += static_cast<uint64_t>(rc);
+    }
+    return true;
+}
+"""
+replace_once(APR_REACTOR, reactor_helper_anchor, reactor_helper_insert)
+
+short_anchor = """        const bool shortRead =
+            finalState == SCE_KERNEL_AIO_STATE_COMPLETED &&
+            active.result.returnValue >= 0 &&
+            static_cast<uint64_t>(active.result.returnValue) != active.desc.length;
+"""
+short_insert = """        bool shortRead =
+            finalState == SCE_KERNEL_AIO_STATE_COMPLETED &&
+            active.result.returnValue >= 0 &&
+            static_cast<uint64_t>(active.result.returnValue) != active.desc.length;
+"""
+replace_once(APR_REACTOR, short_anchor, short_insert)
+
+fallback_anchor = """        if (!job || !chain) {
+            apr_release_aio_read_desc(active.desc);
+            decrement_active_read_count(job);
+            decrement_read_chain_active(chain, active.readCreditBytes);
+            maybe_finish_read_chain(chain);
+            return false;
+        }
+#if AMPR_EMU_DEBUG_LOG
+"""
+fallback_insert = """        if (!job || !chain) {
+            apr_release_aio_read_desc(active.desc);
+            decrement_active_read_count(job);
+            decrement_read_chain_active(chain, active.readCreditBytes);
+            maybe_finish_read_chain(chain);
+            return false;
+        }
+
+        const bool physicalAioCompatCandidate =
+            finalState == SCE_KERNEL_AIO_STATE_COMPLETED &&
+            (rc != 0 || shortRead) &&
+            rc != SCE_KERNEL_ERROR_EFAULT &&
+            rc != SCE_KERNEL_ERROR_ECANCELED &&
+            active.desc.fd >= 0 &&
+            !ampr_pack_is_virtual_fd(active.desc.fd);
+        if (physicalAioCompatCandidate) {
+            const int originalRc = rc;
+            const int64_t originalReturn = active.result.returnValue;
+            const bool recovered = apr_physical_pread_exact(
+                active.desc.fd,
+                active.desc.buffer,
+                active.desc.length,
+                active.desc.offset);
+            AMPR_KLOGF("[AMPR_APR_IO] physical-pread-fallback fileId=%u path=%s fd=%d len=0x%llx off=0x%llx aio_rc=0x%x aio_return=0x%llx recovered=%u",
+                       active.desc.fileId,
+                       active.desc.filePath ? active.desc.filePath : "(null)",
+                       active.desc.fd,
+                       (unsigned long long)active.desc.length,
+                       (unsigned long long)active.desc.offset,
+                       originalRc,
+                       (unsigned long long)originalReturn,
+                       recovered ? 1u : 0u);
+            if (recovered) {
+                rc = 0;
+                shortRead = false;
+                active.result.returnValue =
+                    static_cast<int64_t>(active.desc.length);
+            }
+        }
+#if AMPR_EMU_DEBUG_LOG
+"""
+replace_once(APR_REACTOR, fallback_anchor, fallback_insert)
+
+# Report the exact APR resolve outcome in the same build, so one hardware run
+# distinguishes resolver/index failure from a subsequent physical read failure.
+resolve_done_anchor = """    const int rc = sce::Ampr::Emu::aprResolveFilepathsToIdsAndFileSizes(
+        path, num, (SceAprFileId*)ids, fileSizes, effectiveErrorIndex);
+    AMPR_VLOGF("lk.apr.resolveIdsSizes leave rc=0x%x ids=%p sizes=%p errorIndex=%p",
+              rc, ids, fileSizes, errorIndex);
+"""
+resolve_done_insert = """    const int rc = sce::Ampr::Emu::aprResolveFilepathsToIdsAndFileSizes(
+        path, num, (SceAprFileId*)ids, fileSizes, effectiveErrorIndex);
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    if (rc == 0 && num != 0 && ids && fileSizes) {
+        AMPR_KLOGF("[AMPR_CALL] apr.resolveIdsSizes done rc=0 id0=%u size0=0x%llx",
+                   ids[0], (unsigned long long)fileSizes[0]);
+    } else {
+        AMPR_KLOGF("[AMPR_CALL] apr.resolveIdsSizes done rc=0x%x errorIndex=%u",
+                   rc,
+                   effectiveErrorIndex ? *effectiveErrorIndex : UINT32_MAX);
+    }
+#endif
+    AMPR_VLOGF("lk.apr.resolveIdsSizes leave rc=0x%x ids=%p sizes=%p errorIndex=%p",
+              rc, ids, fileSizes, errorIndex);
+"""
+replace_once(APR_BRIDGE, resolve_done_anchor, resolve_done_insert)
+
+print("Applied exhaustive AMPR diagnostics + APR physical AIO pread fallback")
+
 
 
 

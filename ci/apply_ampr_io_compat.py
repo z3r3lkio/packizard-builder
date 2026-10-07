@@ -1438,11 +1438,25 @@ hybrid_return_insert = """    const int fd = realFd >= 0
 """
 replace_once(PACK, hybrid_return_anchor, hybrid_return_insert)
 
-close_anchor = """    uint32_t index = 0;
+close_anchor = """int ampr_pack_try_close_fd(int fd, bool* handled) {
+    if (handled) *handled = false;
+#if !AMPR_EMU_PACK_ENABLE
+    (void)fd;
+    return SCE_KERNEL_ERROR_EBADF;
+#else
+    PackState& state = pack_state();
+    uint32_t index = 0;
     uint16_t generation = 0;
     if (decode_virtual_directory_fd(fd, &index, &generation)) {
 """
-close_insert = """    uint32_t index = 0;
+close_insert = """int ampr_pack_try_close_fd(int fd, bool* handled) {
+    if (handled) *handled = false;
+#if !AMPR_EMU_PACK_ENABLE
+    (void)fd;
+    return SCE_KERNEL_ERROR_EBADF;
+#else
+    PackState& state = pack_state();
+    uint32_t index = 0;
     uint16_t generation = 0;
     const bool hybridDirectory =
         find_hybrid_directory_slot(state, fd, &index, &generation);
@@ -1451,12 +1465,28 @@ close_insert = """    uint32_t index = 0;
 """
 replace_once(PACK, close_anchor, close_insert)
 
-fstat_anchor = """    uint32_t index = 0;
+fstat_anchor = """int ampr_pack_try_fstat_fd(int fd, SceKernelStat* stat, bool* handled) {
+    if (handled) *handled = false;
+#if !AMPR_EMU_PACK_ENABLE
+    (void)fd; (void)stat;
+    return SCE_KERNEL_ERROR_EBADF;
+#else
+    if (!stat) return SCE_KERNEL_ERROR_EFAULT;
+    PackState& state = pack_state();
+    uint32_t index = 0;
     uint16_t generation = 0;
     if (decode_virtual_directory_fd(fd, &index, &generation)) {
         if (handled) *handled = true;
 """
-fstat_insert = """    uint32_t index = 0;
+fstat_insert = """int ampr_pack_try_fstat_fd(int fd, SceKernelStat* stat, bool* handled) {
+    if (handled) *handled = false;
+#if !AMPR_EMU_PACK_ENABLE
+    (void)fd; (void)stat;
+    return SCE_KERNEL_ERROR_EBADF;
+#else
+    if (!stat) return SCE_KERNEL_ERROR_EFAULT;
+    PackState& state = pack_state();
+    uint32_t index = 0;
     uint16_t generation = 0;
     const bool hybridDirectory =
         find_hybrid_directory_slot(state, fd, &index, &generation);
@@ -1491,12 +1521,28 @@ dirread_state_insert = """    KernelGetdentsFn getdentsFn = real_getdents();
 """
 replace_once(PACK, dirread_state_anchor, dirread_state_insert)
 
-lseek_anchor = """    uint32_t index = 0;
+lseek_anchor = """off_t ampr_pack_try_lseek_fd(int fd, off_t offset, int whence,
+                             bool* handled) {
+    if (handled) *handled = false;
+#if !AMPR_EMU_PACK_ENABLE
+    (void)fd; (void)offset; (void)whence;
+    return static_cast<off_t>(SCE_KERNEL_ERROR_EBADF);
+#else
+    PackState& state = pack_state();
+    uint32_t index = 0;
     uint16_t generation = 0;
     if (decode_virtual_directory_fd(fd, &index, &generation)) {
         if (handled) *handled = true;
 """
-lseek_insert = """    uint32_t index = 0;
+lseek_insert = """off_t ampr_pack_try_lseek_fd(int fd, off_t offset, int whence,
+                             bool* handled) {
+    if (handled) *handled = false;
+#if !AMPR_EMU_PACK_ENABLE
+    (void)fd; (void)offset; (void)whence;
+    return static_cast<off_t>(SCE_KERNEL_ERROR_EBADF);
+#else
+    PackState& state = pack_state();
+    uint32_t index = 0;
     uint16_t generation = 0;
     const bool hybridDirectory =
         find_hybrid_directory_slot(state, fd, &index, &generation);

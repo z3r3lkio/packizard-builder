@@ -8,6 +8,7 @@ HOOK = ROOT / "src" / "ampr_libkernel_hook.cpp"
 HOOK_HEADER = ROOT / "include" / "ampr_libkernel_hook.h"
 INDEX = ROOT / "src" / "ampr_emu_index.cpp"
 EXPORTS = ROOT / "src" / "sceampr_exports.cpp"
+APR_BRIDGE = ROOT / "src" / "ampr_emu_apr_kernel_bridge.cpp"
 
 
 def replace_once(path: Path, old: str, new: str) -> None:
@@ -1311,7 +1312,77 @@ read_fallback_insert = """#define AMPR_LIBKERNEL_PACK_PROCESS_SYNC_READ_SDK_FALL
 """
 replace_once(HOOK, read_fallback_anchor, read_fallback_insert)
 
-print("Applied exhaustive AMPR diagnostics + aligned sceKernel filesystem aliases")
+
+# Trace the remaining file-discovery APIs that can run immediately after
+# directory enumeration. Normal AMPR debug macros are disabled in this build,
+# so use AMPR_KLOGF directly and keep the output low-volume.
+reach_anchor = """extern "C" int sceKernelCheckReachability_emul(const char* path) {
+    bool expectedIndexMiss = false;
+    const int result = sceKernelCheckReachability_impl(
+        path, &expectedIndexMiss);
+"""
+reach_insert = """extern "C" int sceKernelCheckReachability_emul(const char* path) {
+    bool expectedIndexMiss = false;
+    const int result = sceKernelCheckReachability_impl(
+        path, &expectedIndexMiss);
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    AMPR_KLOGF("[AMPR_CALL] reachability path=%s rc=%d expected_miss=%u",
+               path ? path : "(null)", result,
+               expectedIndexMiss ? 1u : 0u);
+#endif
+"""
+replace_once(INDEX, reach_anchor, reach_insert)
+
+apr_size_anchor = """extern "C" int sceKernelAprGetFileSize_emul(int fileId, uint64_t* outSize) {
+    AMPR_TLOGF("lk.apr.getFileSize enter fileId=%d out=%p", fileId, outSize);
+"""
+apr_size_insert = """extern "C" int sceKernelAprGetFileSize_emul(int fileId, uint64_t* outSize) {
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    AMPR_KLOGF("[AMPR_CALL] apr.getFileSize enter fileId=%d", fileId);
+#endif
+    AMPR_TLOGF("lk.apr.getFileSize enter fileId=%d out=%p", fileId, outSize);
+"""
+replace_once(APR_BRIDGE, apr_size_anchor, apr_size_insert)
+
+apr_stat_anchor = """extern "C" int sceKernelAprGetFileStat_emul(int fileId, SceKernelStat* st) {
+    AMPR_TLOGF("lk.apr.getFileStat enter fileId=%d out=%p", fileId, st);
+"""
+apr_stat_insert = """extern "C" int sceKernelAprGetFileStat_emul(int fileId, SceKernelStat* st) {
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    AMPR_KLOGF("[AMPR_CALL] apr.getFileStat enter fileId=%d", fileId);
+#endif
+    AMPR_TLOGF("lk.apr.getFileStat enter fileId=%d out=%p", fileId, st);
+"""
+replace_once(APR_BRIDGE, apr_stat_anchor, apr_stat_insert)
+
+apr_resolve_anchor = """extern "C" int sceKernelAprResolveFilepathsToIds_emul(const char* path[], uint32_t num, uint32_t ids[], uint32_t* errorIndex) {
+    AMPR_VLOGF("lk.apr.resolveIds enter paths=%p num=%u ids=%p errorIndex=%p", path, (unsigned)num, ids, errorIndex);
+"""
+apr_resolve_insert = """extern "C" int sceKernelAprResolveFilepathsToIds_emul(const char* path[], uint32_t num, uint32_t ids[], uint32_t* errorIndex) {
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    AMPR_KLOGF("[AMPR_CALL] apr.resolveIds num=%u first=%s",
+               (unsigned)num,
+               (path && num && path[0]) ? path[0] : "(null)");
+#endif
+    AMPR_VLOGF("lk.apr.resolveIds enter paths=%p num=%u ids=%p errorIndex=%p", path, (unsigned)num, ids, errorIndex);
+"""
+replace_once(APR_BRIDGE, apr_resolve_anchor, apr_resolve_insert)
+
+apr_resolve_sizes_anchor = """extern "C" int sceKernelAprResolveFilepathsToIdsAndFileSizes_emul(const char* path[], uint32_t num, uint32_t ids[], size_t fileSizes[], uint32_t* errorIndex) {
+    AMPR_VLOGF("lk.apr.resolveIdsSizes enter paths=%p num=%u ids=%p sizes=%p errorIndex=%p",
+"""
+apr_resolve_sizes_insert = """extern "C" int sceKernelAprResolveFilepathsToIdsAndFileSizes_emul(const char* path[], uint32_t num, uint32_t ids[], size_t fileSizes[], uint32_t* errorIndex) {
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    AMPR_KLOGF("[AMPR_CALL] apr.resolveIdsSizes num=%u first=%s",
+               (unsigned)num,
+               (path && num && path[0]) ? path[0] : "(null)");
+#endif
+    AMPR_VLOGF("lk.apr.resolveIdsSizes enter paths=%p num=%u ids=%p sizes=%p errorIndex=%p",
+"""
+replace_once(APR_BRIDGE, apr_resolve_sizes_anchor, apr_resolve_sizes_insert)
+
+print("Applied exhaustive AMPR diagnostics + post-enumeration APR/reachability tracing")
+
 
 
 

@@ -5,6 +5,7 @@ ROOT = Path(__file__).resolve().parents[1] / "ampr_emu"
 CONFIG = ROOT / "include" / "ampr_emu_config.h"
 PACK = ROOT / "src" / "ampr_emu_pack.cpp"
 HOOK = ROOT / "src" / "ampr_libkernel_hook.cpp"
+HOOK_HEADER = ROOT / "include" / "ampr_libkernel_hook.h"
 INDEX = ROOT / "src" / "ampr_emu_index.cpp"
 EXPORTS = ROOT / "src" / "sceampr_exports.cpp"
 
@@ -1199,7 +1200,119 @@ hook_read_alias_insert = """    {"pread", reinterpret_cast<void*>(&posix_pread_e
 """
 replace_once(HOOK, hook_read_alias_anchor, hook_read_alias_insert)
 
-print("Applied exhaustive AMPR diagnostics + sceKernel filesystem aliases")
+
+# Keep HookId ordering and SDK fallback tables aligned with the sceKernel aliases
+# added above. The hook implementation relies on exact positional correspondence.
+hook_enum_anchor = """    kAmprLibkernelHook_open = 0,
+    kAmprLibkernelHook_stat,
+"""
+hook_enum_insert = """    kAmprLibkernelHook_open = 0,
+    kAmprLibkernelHook_sceKernelOpen,
+    kAmprLibkernelHook_stat,
+    kAmprLibkernelHook_sceKernelStat,
+"""
+replace_once(HOOK_HEADER, hook_enum_anchor, hook_enum_insert)
+
+hook_enum_fd_anchor = """    kAmprLibkernelHook_sceKernelClose,
+    kAmprLibkernelHook_close,
+    kAmprLibkernelHook_fstat,
+    kAmprLibkernelHook_lseek,
+"""
+hook_enum_fd_insert = """    kAmprLibkernelHook_sceKernelClose,
+    kAmprLibkernelHook_close,
+    kAmprLibkernelHook_fstat,
+    kAmprLibkernelHook_sceKernelFstat,
+    kAmprLibkernelHook_lseek,
+"""
+replace_once(HOOK_HEADER, hook_enum_fd_anchor, hook_enum_fd_insert)
+
+hook_enum_dir_anchor = """    kAmprLibkernelHook_getdents,
+    kAmprLibkernelHook_getdirentries,
+"""
+hook_enum_dir_insert = """    kAmprLibkernelHook_getdents,
+    kAmprLibkernelHook_sceKernelGetdents,
+    kAmprLibkernelHook_getdirentries,
+    kAmprLibkernelHook_sceKernelGetdirentries,
+"""
+replace_once(HOOK_HEADER, hook_enum_dir_anchor, hook_enum_dir_insert)
+
+hook_enum_read_anchor = """    kAmprLibkernelHook_pread,
+    kAmprLibkernelHook_preadv,
+    kAmprLibkernelHook_read,
+    kAmprLibkernelHook_readv,
+"""
+hook_enum_read_insert = """    kAmprLibkernelHook_pread,
+    kAmprLibkernelHook_sceKernelPread,
+    kAmprLibkernelHook_preadv,
+    kAmprLibkernelHook_sceKernelPreadv,
+    kAmprLibkernelHook_read,
+    kAmprLibkernelHook_sceKernelRead,
+    kAmprLibkernelHook_readv,
+    kAmprLibkernelHook_sceKernelReadv,
+"""
+replace_once(HOOK_HEADER, hook_enum_read_anchor, hook_enum_read_insert)
+
+sdk_fallback_anchor = """#define AMPR_LIBKERNEL_SDK_FALLBACKS \\
+    nullptr, \\
+    nullptr, \\
+    reinterpret_cast<void*>(&::sceKernelCheckReachability), \\
+"""
+sdk_fallback_insert = """#define AMPR_LIBKERNEL_SDK_FALLBACKS \\
+    nullptr, \\
+    reinterpret_cast<void*>(&::sceKernelOpen), \\
+    nullptr, \\
+    reinterpret_cast<void*>(&::sceKernelStat), \\
+    reinterpret_cast<void*>(&::sceKernelCheckReachability), \\
+"""
+replace_once(HOOK, sdk_fallback_anchor, sdk_fallback_insert)
+
+fd_fallback_anchor = """#define AMPR_LIBKERNEL_PACK_FD_SDK_FALLBACKS \\
+    , nullptr \\
+    , nullptr \\
+    , nullptr \\
+    , nullptr
+"""
+fd_fallback_insert = """#define AMPR_LIBKERNEL_PACK_FD_SDK_FALLBACKS \\
+    , reinterpret_cast<void*>(&::sceKernelClose) \\
+    , nullptr \\
+    , nullptr \\
+    , reinterpret_cast<void*>(&::sceKernelFstat) \\
+    , nullptr
+"""
+replace_once(HOOK, fd_fallback_anchor, fd_fallback_insert)
+
+dir_fallback_anchor = """#define AMPR_LIBKERNEL_PACK_DIRECTORY_SDK_FALLBACKS \\
+    , nullptr \\
+    , nullptr
+"""
+dir_fallback_insert = """#define AMPR_LIBKERNEL_PACK_DIRECTORY_SDK_FALLBACKS \\
+    , nullptr \\
+    , reinterpret_cast<void*>(&::sceKernelGetdents) \\
+    , nullptr \\
+    , reinterpret_cast<void*>(&::sceKernelGetdirentries)
+"""
+replace_once(HOOK, dir_fallback_anchor, dir_fallback_insert)
+
+read_fallback_anchor = """#define AMPR_LIBKERNEL_PACK_PROCESS_SYNC_READ_SDK_FALLBACKS \\
+    , nullptr \\
+    , nullptr \\
+    , nullptr \\
+    , nullptr
+"""
+read_fallback_insert = """#define AMPR_LIBKERNEL_PACK_PROCESS_SYNC_READ_SDK_FALLBACKS \\
+    , nullptr \\
+    , reinterpret_cast<void*>(&::sceKernelPread) \\
+    , nullptr \\
+    , reinterpret_cast<void*>(&::sceKernelPreadv) \\
+    , nullptr \\
+    , reinterpret_cast<void*>(&::sceKernelRead) \\
+    , nullptr \\
+    , reinterpret_cast<void*>(&::sceKernelReadv)
+"""
+replace_once(HOOK, read_fallback_anchor, read_fallback_insert)
+
+print("Applied exhaustive AMPR diagnostics + aligned sceKernel filesystem aliases")
+
 
 
 

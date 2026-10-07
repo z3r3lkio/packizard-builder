@@ -971,7 +971,179 @@ hybrid_fstat_insert = """        const VirtualDirectorySlot& slot = state.virtua
 """
 replace_once(PACK, hybrid_fstat_anchor, hybrid_fstat_insert)
 
-print("Applied exhaustive AMPR diagnostics + hybrid directory metadata preservation")
+
+# Merge physical and virtual directory entries into the same getdents result
+# whenever space permits. The previous hybrid implementation returned as soon
+# as it had any physical entries, so callers that treat a short getdents result
+# as end-of-directory never saw packed-only children (for example .ucas files).
+hybrid_dir_anchor = """    while (!slot.realExhausted && slot.realFd >= 0) {
+        long physicalBase = slot.directoryOffset;
+        int rc = SCE_KERNEL_ERROR_EIO;
+        if (useGetdirentries) {
+            if (!getdirentriesFn) return SCE_KERNEL_ERROR_EIO;
+            rc = getdirentriesFn(slot.realFd, buffer, size, &physicalBase);
+        } else {
+            if (!getdentsFn) return SCE_KERNEL_ERROR_EIO;
+            rc = getdentsFn(slot.realFd, buffer, size);
+        }
+        if (rc < 0) return rc;
+        if (useGetdirentries) {
+            slot.directoryOffset = advance_directory_offset(physicalBase, rc);
+        } else if (KernelLseekFn lseekFn = real_lseek()) {
+            const off_t current = lseekFn(slot.realFd, 0, SEEK_CUR);
+            if (current >= 0 &&
+                static_cast<uint64_t>(current) <=
+                    static_cast<uint64_t>((std::numeric_limits<long>::max)())) {
+                slot.directoryOffset = static_cast<long>(current);
+            } else {
+                slot.directoryOffset = advance_directory_offset(
+                    slot.directoryOffset, rc);
+            }
+        } else {
+            slot.directoryOffset = advance_directory_offset(
+                slot.directoryOffset, rc);
+        }
+        if (rc == 0) {
+            slot.realExhausted = true;
+            break;
+        }
+        size_t input = 0;
+        size_t output = 0;
+        while (input < static_cast<size_t>(rc)) {
+            auto* entry = reinterpret_cast<struct dirent*>(buffer + input);
+            const size_t recordSize = entry->d_reclen;
+            if (recordSize < offsetof(struct dirent, d_name) + 1u ||
+                recordSize > static_cast<size_t>(rc) - input ||
+                static_cast<size_t>(entry->d_namlen) + 1u >
+                    recordSize - offsetof(struct dirent, d_name)) {
+                return SCE_KERNEL_ERROR_EIO;
+            }
+            const size_t nameLength = entry->d_namlen;
+            const bool hidden = service_name_hidden(
+                state, slot.path, slot.pathLength, entry->d_name, nameLength);
+            if (hidden) {
+                state.stats.directoryHiddenEntries.fetch_add(
+                    1, std::memory_order_relaxed);
+            } else {
+                directory_record_physical_name(
+                    slot, entry->d_name, nameLength);
+                if (output != input) {
+                    std::memmove(buffer + output, entry, recordSize);
+                }
+                output += recordSize;
+                state.stats.directoryPhysicalEntries.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
+            input += recordSize;
+        }
+        if (output != 0) {
+            if (basep) *basep = physicalBase;
+#if AMPR_EMU_PACK_IO_LOG
+            AMPR_LOGF("apr.pack.dir.%s path=%s vfd=0x%x phase=physical bytes=%llu base=%lld",
+                      useGetdirentries ? "getdirentries" : "getdents",
+                      slot.path, (unsigned)fd,
+                      (unsigned long long)output,
+                      (long long)physicalBase);
+#endif
+            return static_cast<int>(output);
+        }
+    }
+
+    size_t output = 0;
+"""
+hybrid_dir_insert = """    size_t output = 0;
+    while (!slot.realExhausted && slot.realFd >= 0 &&
+           output < static_cast<size_t>(size)) {
+        const size_t remaining = static_cast<size_t>(size) - output;
+        char* const physicalBuffer = buffer + output;
+        long physicalBase = slot.directoryOffset;
+        int rc = SCE_KERNEL_ERROR_EIO;
+        if (useGetdirentries) {
+            if (!getdirentriesFn) return SCE_KERNEL_ERROR_EIO;
+            rc = getdirentriesFn(slot.realFd, physicalBuffer,
+                                 static_cast<int>(remaining), &physicalBase);
+        } else {
+            if (!getdentsFn) return SCE_KERNEL_ERROR_EIO;
+            rc = getdentsFn(slot.realFd, physicalBuffer,
+                            static_cast<int>(remaining));
+        }
+        if (rc < 0) return rc;
+        if (useGetdirentries) {
+            slot.directoryOffset = advance_directory_offset(physicalBase, rc);
+        } else if (KernelLseekFn lseekFn = real_lseek()) {
+            const off_t current = lseekFn(slot.realFd, 0, SEEK_CUR);
+            if (current >= 0 &&
+                static_cast<uint64_t>(current) <=
+                    static_cast<uint64_t>((std::numeric_limits<long>::max)())) {
+                slot.directoryOffset = static_cast<long>(current);
+            } else {
+                slot.directoryOffset = advance_directory_offset(
+                    slot.directoryOffset, rc);
+            }
+        } else {
+            slot.directoryOffset = advance_directory_offset(
+                slot.directoryOffset, rc);
+        }
+        if (rc == 0) {
+            slot.realExhausted = true;
+            break;
+        }
+
+        size_t input = 0;
+        size_t compacted = 0;
+        while (input < static_cast<size_t>(rc)) {
+            auto* entry = reinterpret_cast<struct dirent*>(
+                physicalBuffer + input);
+            const size_t recordSize = entry->d_reclen;
+            if (recordSize < offsetof(struct dirent, d_name) + 1u ||
+                recordSize > static_cast<size_t>(rc) - input ||
+                static_cast<size_t>(entry->d_namlen) + 1u >
+                    recordSize - offsetof(struct dirent, d_name)) {
+                return SCE_KERNEL_ERROR_EIO;
+            }
+            const size_t nameLength = entry->d_namlen;
+            const bool hidden = service_name_hidden(
+                state, slot.path, slot.pathLength, entry->d_name, nameLength);
+            if (hidden) {
+                state.stats.directoryHiddenEntries.fetch_add(
+                    1, std::memory_order_relaxed);
+            } else {
+                directory_record_physical_name(
+                    slot, entry->d_name, nameLength);
+                if (compacted != input) {
+                    std::memmove(physicalBuffer + compacted,
+                                 entry, recordSize);
+                }
+                compacted += recordSize;
+                state.stats.directoryPhysicalEntries.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
+            input += recordSize;
+        }
+        output += compacted;
+
+        // If filtering consumed the whole returned batch but there is still
+        // room, keep draining the physical directory. Otherwise continue too:
+        // a single emulated getdents should expose the complete merged view
+        // whenever the caller supplied enough space.
+        if (output >= static_cast<size_t>(size)) {
+            break;
+        }
+    }
+
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    if (output != 0) {
+        AMPR_KLOGF("[AMPR_DIR] merge.physical vfd=0x%x bytes=%llu exhausted=%u",
+                   (unsigned)fd,
+                   (unsigned long long)output,
+                   slot.realExhausted ? 1u : 0u);
+    }
+#endif
+"""
+replace_once(PACK, hybrid_dir_anchor, hybrid_dir_insert)
+
+print("Applied exhaustive AMPR diagnostics + merged hybrid getdents view")
+
 
 
 

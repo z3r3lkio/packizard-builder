@@ -933,7 +933,46 @@ async_insert = """        ready = ampr_pack_ensure_manifest_ready_safe();
 """
 replace_once(EXPORTS, async_anchor, async_insert)
 
-print("Applied exhaustive AMPR diagnostics + manifest failure tracing")
+
+# Preserve real directory metadata for hybrid directory wrappers. When a
+# physical directory is wrapped only to overlay virtual packed children, fstat
+# must describe the underlying directory rather than a synthetic zero-sized,
+# read-only directory. Some engines validate directory metadata immediately
+# after enumeration.
+hybrid_fstat_anchor = """        const VirtualDirectorySlot& slot = state.virtualDirectories[index];
+        if (!slot.active || slot.generation != generation) {
+            return SCE_KERNEL_ERROR_EBADF;
+        }
+        fill_synthetic_stat(stat, true, 0, 0,
+                            folded_hash(slot.path, slot.pathLength));
+        return 0;
+"""
+hybrid_fstat_insert = """        const VirtualDirectorySlot& slot = state.virtualDirectories[index];
+        if (!slot.active || slot.generation != generation) {
+            return SCE_KERNEL_ERROR_EBADF;
+        }
+        if (slot.realFd >= 0) {
+            KernelFstatFn fn = real_fstat();
+            if (!fn) return SCE_KERNEL_ERROR_EIO;
+            const int rc = fn(slot.realFd, stat);
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+            AMPR_KLOGF("[AMPR_DIR] hybrid.fstat vfd=0x%x realfd=%d rc=%d size=%lld mode=0%o",
+                       (unsigned)fd,
+                       slot.realFd,
+                       rc,
+                       (long long)(rc == 0 ? stat->st_size : -1),
+                       rc == 0 ? (unsigned)stat->st_mode : 0u);
+#endif
+            return rc == -1 ? ampr_sce_errno_from_posix(errno) : rc;
+        }
+        fill_synthetic_stat(stat, true, 0, 0,
+                            folded_hash(slot.path, slot.pathLength));
+        return 0;
+"""
+replace_once(PACK, hybrid_fstat_anchor, hybrid_fstat_insert)
+
+print("Applied exhaustive AMPR diagnostics + hybrid directory metadata preservation")
+
 
 
 

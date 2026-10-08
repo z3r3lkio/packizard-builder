@@ -1948,6 +1948,102 @@ publish_result_insert = """        job.aprRes->result = result;
 """
 replace_once(APR_REACTOR, publish_result_anchor, publish_result_insert)
 
+
+# If the mounted filesystem rejects native AIO submission entirely, recover
+# physical APR reads synchronously instead of translating the backend failure to
+# APR_UNAVAILABLEFILEID. This path runs only for non-deferred submit failures,
+# preserves packed/virtual reads, and commits the same ReadChain accounting that
+# accept_aio_submit_item() would have committed before an asynchronous completion.
+reject_anchor = """        active->awaitingBatchSubmit = false;
+        rollback_staged_aio_admission(*admission, *active);
+        apr_release_aio_read_desc(active->desc);
+        decrement_active_read_count(job);
+        decrement_read_chain_active(chain, active->readCreditBytes);
+        (void)erase_active_read(activeReads.iterator_from_slot(item.slot));
+        detach_staged_read_chain(job, chain);
+        chain->allIssued = true;
+        maybe_finish_read_chain(chain);
+        if (!job_failed(*job)) {
+            set_or_defer_read_command_error(
+                *job,
+                "aio-submit",
+                apr_backend_read_error_to_apr(submitSceRc),
+                errorOff);
+        }
+        maybe_release_reactor_job(job);
+"""
+reject_insert = """        active->awaitingBatchSubmit = false;
+        rollback_staged_aio_admission(*admission, *active);
+
+        const bool physicalSyncCandidate =
+            active->desc.fd >= 0 &&
+            !ampr_pack_is_virtual_fd(active->desc.fd);
+        if (physicalSyncCandidate) {
+            const bool recovered = apr_physical_pread_exact(
+                active->desc.fd,
+                active->desc.buffer,
+                active->desc.length,
+                active->desc.offset);
+            AMPR_KLOGF("[AMPR_APR_IO] aio-submit-sync-fallback fileId=%u path=%s fd=%d len=0x%llx off=0x%llx submitRc=0x%x recovered=%u",
+                       active->desc.fileId,
+                       active->desc.filePath ? active->desc.filePath : "(null)",
+                       active->desc.fd,
+                       (unsigned long long)active->desc.length,
+                       (unsigned long long)active->desc.offset,
+                       submitSceRc,
+                       recovered ? 1u : 0u);
+            if (recovered) {
+                reserve_read_chain_sequence(*job, *chain);
+                if (active->seq != chain->seq) {
+                    AMPR_KLOGF("ampr.abort reason=apr.reactor.aio.submit.sync.sequence file=%s line=%d", __FILE__, __LINE__);
+                    std::abort();
+                }
+                const uint64_t issuedLength = active->desc.length;
+                if (issuedLength == 0 || issuedLength > chain->remaining) {
+                    AMPR_KLOGF("ampr.abort reason=apr.reactor.aio.submit.sync.range file=%s line=%d", __FILE__, __LINE__);
+                    std::abort();
+                }
+                chain->remaining -= issuedLength;
+                chain->nextBuffer = reinterpret_cast<void*>(
+                    reinterpret_cast<uintptr_t>(chain->nextBuffer) +
+                    static_cast<uintptr_t>(issuedLength));
+                chain->nextOffset += issuedLength;
+                active->submitAccounted = true;
+
+                apr_release_aio_read_desc(active->desc);
+                decrement_active_read_count(job);
+                decrement_read_chain_active(chain, active->readCreditBytes);
+                (void)erase_active_read(activeReads.iterator_from_slot(item.slot));
+                if (chain->remaining == 0) {
+                    chain->allIssued = true;
+                    detach_staged_read_chain(job, chain);
+                }
+                maybe_finish_read_chain(chain);
+                maybe_release_reactor_job(job);
+                return;
+            }
+        }
+
+        apr_release_aio_read_desc(active->desc);
+        decrement_active_read_count(job);
+        decrement_read_chain_active(chain, active->readCreditBytes);
+        (void)erase_active_read(activeReads.iterator_from_slot(item.slot));
+        detach_staged_read_chain(job, chain);
+        chain->allIssued = true;
+        maybe_finish_read_chain(chain);
+        if (!job_failed(*job)) {
+            set_or_defer_read_command_error(
+                *job,
+                "aio-submit",
+                apr_backend_read_error_to_apr(submitSceRc),
+                errorOff);
+        }
+        maybe_release_reactor_job(job);
+"""
+replace_once(APR_REACTOR, reject_anchor, reject_insert)
+
+print("Applied synchronous APR recovery for native AIO submit rejection")
+
 print("Applied deterministic APR result init + authoritative physical pread refresh")
 
 print("Applied APR command-buffer transition diagnostics")

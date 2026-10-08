@@ -2078,6 +2078,222 @@ direct_open_insert = """        int fd = ampr_real_posix_open(
 """
 replace_once(APR_REACTOR, direct_open_anchor, direct_open_insert)
 
+
+# Compatibility path for small full-file APR reads on mounted filesystems.
+# These reads do not benefit from FD-cache promotion and are especially
+# sensitive to synthetic/mounted filesystem semantics. Force them onto the
+# direct descriptor path, then complete them synchronously before native AIO.
+policy_anchor = """static void apr_update_read_desc_fd_policy(AprAioReadDesc& rd,
+                                           bool promoteFullFile) {
+    if (!rd.fileMetadataValid) {
+        return;
+    }
+    rd.bypassFdCache = apr_read_is_single_quantum_full_file(
+        rd.offset, rd.length, static_cast<uint64_t>(rd.fileSize)) &&
+        !promoteFullFile;
+}
+"""
+policy_insert = """static void apr_update_read_desc_fd_policy(AprAioReadDesc& rd,
+                                           bool promoteFullFile) {
+    (void)promoteFullFile;
+    if (!rd.fileMetadataValid) {
+        return;
+    }
+    rd.bypassFdCache = apr_read_is_single_quantum_full_file(
+        rd.offset, rd.length, static_cast<uint64_t>(rd.fileSize));
+}
+"""
+replace_once(APR_REACTOR, policy_anchor, policy_insert)
+
+enum_anchor = """    enum class DirectReadSubmitResult : uint8_t {
+        Pending,
+        Staged,
+        Failed,
+    };
+"""
+enum_insert = """    enum class DirectReadSubmitResult : uint8_t {
+        Pending,
+        Staged,
+        Completed,
+        Failed,
+    };
+"""
+replace_once(APR_REACTOR, enum_anchor, enum_insert)
+
+sync_anchor = """        if (chain.ownerDesc.fd < 0) {
+            int acquireRc = 0;
+            uint32_t acquireErrorOff = chain.ownerDesc.errorOff;
+            const bool allowNewFd = !admission.fdPressure;
+            const bool acquired = apr_acquire_aio_read_desc(job->id,
+                                                            chain.ownerDesc,
+                                                            allowNewFd,
+                                                            admission.directFdCap,
+                                                            &acquireRc,
+                                                            &acquireErrorOff);
+            if (!acquired) {
+                if (apr_fd_acquire_sce_rc_is_deferred(acquireRc)) {
+                    const uint64_t failureNowNs = time_counter_now();
+                    if (acquireRc == SCE_KERNEL_ERROR_EMFILE) {
+                        note_emfile_event();
+                    }
+                    if (fd_pressure_active(failureNowNs)) {
+                        admission.current = false;
+                    }
+                    chain.retryNotBeforeNs =
+                        failureNowNs + AMPR_EMU_APR_AIO_SUBMIT_RETRY_DELAY_NS;
+                    return {DirectReadSubmitResult::Pending, nullptr, 0, 0};
+                }
+                chain.allIssued = true;
+                const int aprRc = apr_backend_read_error_to_apr(acquireRc);
+                const char* const errorReason =
+                    apr_backend_read_error_reason("aio-acquire-fd", acquireRc);
+                AMPR_CRITICAL_LOGF("apr.reactor.acquire.error-map job=0x%llx fileId=%u reason=%s backendRc=0x%x aprRc=0x%x errorOffset=0x%x",
+                                   (unsigned long long)job->id,
+                                   chain.ownerDesc.fileId,
+                                   errorReason,
+                                   acquireRc,
+                                   aprRc,
+                                   acquireErrorOff);
+                return {DirectReadSubmitResult::Failed,
+                        errorReason,
+                        aprRc,
+                        acquireErrorOff,
+                        acquireRc};
+            }
+            // Rebuild after acquiring the chain-owned fd; the active slice
+            // borrows this descriptor and never owns/duplicates the pin.
+            sliceDesc = read_chain_next_desc(chain);
+        }
+
+        borrow_read_chain_fd(chain, sliceDesc);
+"""
+sync_insert = """        if (chain.ownerDesc.fd < 0) {
+            int acquireRc = 0;
+            uint32_t acquireErrorOff = chain.ownerDesc.errorOff;
+            const bool allowNewFd = !admission.fdPressure;
+            const bool acquired = apr_acquire_aio_read_desc(job->id,
+                                                            chain.ownerDesc,
+                                                            allowNewFd,
+                                                            admission.directFdCap,
+                                                            &acquireRc,
+                                                            &acquireErrorOff);
+            if (!acquired) {
+                if (apr_fd_acquire_sce_rc_is_deferred(acquireRc)) {
+                    const uint64_t failureNowNs = time_counter_now();
+                    if (acquireRc == SCE_KERNEL_ERROR_EMFILE) {
+                        note_emfile_event();
+                    }
+                    if (fd_pressure_active(failureNowNs)) {
+                        admission.current = false;
+                    }
+                    chain.retryNotBeforeNs =
+                        failureNowNs + AMPR_EMU_APR_AIO_SUBMIT_RETRY_DELAY_NS;
+                    return {DirectReadSubmitResult::Pending, nullptr, 0, 0};
+                }
+                chain.allIssued = true;
+                const int aprRc = apr_backend_read_error_to_apr(acquireRc);
+                const char* const errorReason =
+                    apr_backend_read_error_reason("aio-acquire-fd", acquireRc);
+                AMPR_KLOGF("[AMPR_APR_IO] acquire-fail fileId=%u path=%s backendRc=0x%x aprRc=0x%x",
+                           chain.ownerDesc.fileId,
+                           chain.ownerDesc.filePath ? chain.ownerDesc.filePath : "(null)",
+                           acquireRc,
+                           aprRc);
+                return {DirectReadSubmitResult::Failed,
+                        errorReason,
+                        aprRc,
+                        acquireErrorOff,
+                        acquireRc};
+            }
+            sliceDesc = read_chain_next_desc(chain);
+        }
+
+        const bool fullFileSyncCompat =
+            chain.activeCount == 0u &&
+            sliceDesc.offset == 0 &&
+            sliceDesc.length == static_cast<uint64_t>(sliceDesc.fileSize) &&
+            sliceDesc.length <= static_cast<uint64_t>(kSoftwareReadChunkMax) &&
+            chain.remaining == sliceDesc.length;
+        if (fullFileSyncCompat) {
+            bool recovered = false;
+            ssize_t syncRc = -1;
+#if AMPR_EMU_PACK_ENABLE
+            if (ampr_pack_is_virtual_fd(chain.ownerDesc.fd)) {
+                bool handled = false;
+                syncRc = ampr_pack_try_pread_fd(
+                    chain.ownerDesc.fd,
+                    sliceDesc.buffer,
+                    static_cast<size_t>(sliceDesc.length),
+                    static_cast<off_t>(sliceDesc.offset),
+                    &handled);
+                recovered = handled &&
+                    syncRc == static_cast<ssize_t>(sliceDesc.length);
+            } else
+#endif
+            {
+                recovered = apr_physical_pread_exact(
+                    chain.ownerDesc.fd,
+                    sliceDesc.buffer,
+                    sliceDesc.length,
+                    sliceDesc.offset);
+                syncRc = recovered
+                    ? static_cast<ssize_t>(sliceDesc.length)
+                    : static_cast<ssize_t>(-1);
+            }
+
+            AMPR_KLOGF("[AMPR_APR_IO] full-file-sync fileId=%u path=%s fd=%d virtual=%u len=0x%llx rc=%lld recovered=%u",
+                       sliceDesc.fileId,
+                       sliceDesc.filePath ? sliceDesc.filePath : "(null)",
+                       chain.ownerDesc.fd,
+                       ampr_pack_is_virtual_fd(chain.ownerDesc.fd) ? 1u : 0u,
+                       (unsigned long long)sliceDesc.length,
+                       (long long)syncRc,
+                       recovered ? 1u : 0u);
+
+            if (recovered) {
+                reserve_read_chain_sequence(*job, chain);
+                chain.remaining = 0;
+                chain.nextBuffer = reinterpret_cast<void*>(
+                    reinterpret_cast<uintptr_t>(chain.nextBuffer) +
+                    static_cast<uintptr_t>(sliceDesc.length));
+                chain.nextOffset += sliceDesc.length;
+                return {DirectReadSubmitResult::Completed, nullptr, 0, 0};
+            }
+        }
+
+        borrow_read_chain_fd(chain, sliceDesc);
+"""
+replace_once(APR_REACTOR, sync_anchor, sync_insert)
+
+caller_anchor = """        if (outcome.result == DirectReadSubmitResult::Staged) {
+"""
+caller_insert = """        if (outcome.result == DirectReadSubmitResult::Completed) {
+            if (chain->remaining != 0 || chain->activeCount != 0u ||
+                chain->seq == 0 || !chain->hasPendingFinalGs) {
+                AMPR_KLOGF("ampr.abort reason=apr.reactor.readChain.commitSync.invalid file=%s line=%d", __FILE__, __LINE__);
+                std::abort();
+            }
+            chain->allIssued = true;
+            chainSlot = nullptr;
+            gs = chain->pendingFinalGs;
+            if (advanceSource) {
+                clear_cursor_read_wait_hint(job->prioIndex);
+                advance_job_source_commands(
+                    *job, opBytes, sourceCommandCount);
+            }
+            if (outLogicalIssued) {
+                *outLogicalIssued = true;
+            }
+            maybe_finish_read_chain(chain);
+            return true;
+        }
+
+        if (outcome.result == DirectReadSubmitResult::Staged) {
+"""
+replace_once(APR_REACTOR, caller_anchor, caller_insert)
+
+print("Applied direct synchronous compatibility path for small full-file APR reads")
+
 print("Applied APR physical-open compatibility for mounted filesystems")
 
 print("Applied synchronous APR recovery for native AIO submit rejection")

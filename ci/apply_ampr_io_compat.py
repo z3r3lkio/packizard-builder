@@ -10,6 +10,7 @@ INDEX = ROOT / "src" / "ampr_emu_index.cpp"
 EXPORTS = ROOT / "src" / "sceampr_exports.cpp"
 APR_BRIDGE = ROOT / "src" / "ampr_emu_apr_kernel_bridge.cpp"
 APR_REACTOR = ROOT / "src" / "ampr_emu_apr_reactor.cpp"
+APR_SERVICES = ROOT / "src" / "ampr_emu_apr_services.cpp"
 
 
 def replace_once(path: Path, old: str, new: str) -> None:
@@ -1661,20 +1662,20 @@ fallback_insert = """        if (!job || !chain) {
 
         const bool physicalAioCompatCandidate =
             finalState == SCE_KERNEL_AIO_STATE_COMPLETED &&
-            (rc != 0 || shortRead) &&
             rc != SCE_KERNEL_ERROR_EFAULT &&
             rc != SCE_KERNEL_ERROR_ECANCELED &&
             active.desc.fd >= 0 &&
             !ampr_pack_is_virtual_fd(active.desc.fd);
         if (physicalAioCompatCandidate) {
             const int originalRc = rc;
+            const bool originalShortRead = shortRead;
             const int64_t originalReturn = active.result.returnValue;
-            const bool recovered = apr_physical_pread_exact(
+            const bool refreshed = apr_physical_pread_exact(
                 active.desc.fd,
                 active.desc.buffer,
                 active.desc.length,
                 active.desc.offset);
-            AMPR_KLOGF("[AMPR_APR_IO] physical-pread-fallback fileId=%u path=%s fd=%d len=0x%llx off=0x%llx aio_rc=0x%x aio_return=0x%llx recovered=%u",
+            AMPR_KLOGF("[AMPR_APR_IO] physical-pread-refresh fileId=%u path=%s fd=%d len=0x%llx off=0x%llx aio_rc=0x%x aio_return=0x%llx short=%u refreshed=%u",
                        active.desc.fileId,
                        active.desc.filePath ? active.desc.filePath : "(null)",
                        active.desc.fd,
@@ -1682,8 +1683,9 @@ fallback_insert = """        if (!job || !chain) {
                        (unsigned long long)active.desc.offset,
                        originalRc,
                        (unsigned long long)originalReturn,
-                       recovered ? 1u : 0u);
-            if (recovered) {
+                       originalShortRead ? 1u : 0u,
+                       refreshed ? 1u : 0u);
+            if (refreshed) {
                 rc = 0;
                 shortRead = false;
                 active.result.returnValue =
@@ -1891,6 +1893,62 @@ wait_insert = """extern "C" int sceKernelAprWaitCommandBuffer_emul(SceAprSubmitI
 }
 """
 replace_once(APR_BRIDGE, wait_anchor, wait_insert)
+
+
+# Result buffers are asynchronous outputs. Initialize accepted submissions to a
+# deterministic success value before handing ownership to the reactor; final
+# command/infrastructure failures still overwrite the buffer before wait
+# completion is published. This avoids leaking caller stack garbage through a
+# successful submit/wait sequence if a title inspects the buffer aggressively.
+result_init_anchor = """    // Recording/mutation and object-lifetime isolation belong to the
+    // application. Each caller snapshots the immutable stream independently;
+    // the fixed reactor job owns everything needed after this call returns.
+    const uint32_t logicalCommands = static_cast<uint32_t>(rawCommandCount);
+
+    const uint64_t sid = apr_next_submit_id();
+"""
+result_init_insert = """    // Recording/mutation and object-lifetime isolation belong to the
+    // application. Each caller snapshots the immutable stream independently;
+    // the fixed reactor job owns everything needed after this call returns.
+    const uint32_t logicalCommands = static_cast<uint32_t>(rawCommandCount);
+
+    if (res) {
+        res->result = 0;
+        res->errorOffset = 0;
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+        AMPR_KLOGF("[AMPR_CALL] apr.result.init res=%p result=0 errorOffset=0", res);
+#endif
+    }
+
+    const uint64_t sid = apr_next_submit_id();
+"""
+replace_once(APR_SERVICES, result_init_anchor, result_init_insert)
+
+# Publish the final result value to the always-visible log immediately before
+# signaling the synthetic waiter. This lets one run prove whether wait observes
+# a successful result while also exercising the physical pread refresh.
+publish_result_anchor = """        job.aprRes->result = result;
+        job.aprRes->errorOffset = errorOffset;
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        AMPR_TLOGF("apr.reactor.result job=0x%llx mode=%s result=0x%x errorOffset=0x%x commandError=%u res=%p",
+"""
+publish_result_insert = """        job.aprRes->result = result;
+        job.aprRes->errorOffset = errorOffset;
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+        AMPR_KLOGF("[AMPR_CALL] apr.result.final job=0x%llx result=0x%x errorOffset=0x%x commandError=%u res=%p",
+                   (unsigned long long)job.id,
+                   result,
+                   errorOffset,
+                   job.hasCommandError ? 1u : 0u,
+                   job.aprRes);
+#endif
+        AMPR_TLOGF("apr.reactor.result job=0x%llx mode=%s result=0x%x errorOffset=0x%x commandError=%u res=%p",
+"""
+replace_once(APR_REACTOR, publish_result_anchor, publish_result_insert)
+
+print("Applied deterministic APR result init + authoritative physical pread refresh")
 
 print("Applied APR command-buffer transition diagnostics")
 

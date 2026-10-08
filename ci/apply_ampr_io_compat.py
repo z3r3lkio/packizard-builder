@@ -2042,6 +2042,44 @@ reject_insert = """        active->awaitingBatchSubmit = false;
 """
 replace_once(APR_REACTOR, reject_anchor, reject_insert)
 
+
+# Mounted filesystems do not necessarily accept O_NONBLOCK on ordinary files.
+# APR only needs a readable descriptor; async behavior comes from sceKernelAio*
+# itself, not from the open flag. Use plain O_RDONLY for all physical APR file
+# descriptors so loose files on ShadowMount/EXLZ can be opened before AIO or
+# synchronous fallback is attempted.
+aio_open_flags_anchor = """static constexpr int kAprAioOpenFlags = O_RDONLY | O_NONBLOCK;
+"""
+aio_open_flags_insert = """static constexpr int kAprAioOpenFlags = O_RDONLY;
+"""
+replace_once(APR_REACTOR, aio_open_flags_anchor, aio_open_flags_insert)
+
+# Make the direct-open outcome visible even with normal AMPR debug logging off.
+direct_open_anchor = """        int fd = ampr_real_posix_open(
+            directEntry.path,
+            kAprAioOpenFlags,
+            static_cast<SceKernelMode>(0));
+        if (fd == -1) fd = ampr_sce_errno_from_posix(errno);
+"""
+direct_open_insert = """        int fd = ampr_real_posix_open(
+            directEntry.path,
+            kAprAioOpenFlags,
+            static_cast<SceKernelMode>(0));
+        const int directOpenErrno = fd == -1 ? errno : 0;
+        if (fd == -1) fd = ampr_sce_errno_from_posix(directOpenErrno);
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+        AMPR_KLOGF("[AMPR_APR_IO] direct-open fileId=%u path=%s flags=0x%x fd=%d errno=%d",
+                   rd.fileId,
+                   directEntry.path ? directEntry.path : "(null)",
+                   kAprAioOpenFlags,
+                   fd,
+                   directOpenErrno);
+#endif
+"""
+replace_once(APR_REACTOR, direct_open_anchor, direct_open_insert)
+
+print("Applied APR physical-open compatibility for mounted filesystems")
+
 print("Applied synchronous APR recovery for native AIO submit rejection")
 
 print("Applied deterministic APR result init + authoritative physical pread refresh")

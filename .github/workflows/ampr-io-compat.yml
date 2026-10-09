@@ -1,0 +1,100 @@
+name: AMPR Backing I/O Compatibility Debug Build
+
+on:
+  pull_request:
+    branches:
+      - UAT
+    paths:
+      - "ci/apply_ampr_io_compat.py"
+      - ".github/workflows/ampr-io-compat.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ampr-io-compat-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout Packizard patch set
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Checkout pinned ampr_emu
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: drakmor/ampr_emu
+          ref: cfa85df379f6eeeb165d7badf9b648e266fe77b7
+          path: ampr_emu
+          persist-credentials: false
+
+      - name: Apply general backing-I/O compatibility patch
+        run: |
+          python3 ci/apply_ampr_io_compat.py
+          git -C ampr_emu diff --check
+          git -C ampr_emu diff --stat
+
+      - name: Checkout pacbrew-repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ps5-payload-dev/pacbrew-repo
+          ref: 19718edd6fd5e9447f38b7fb59ebbacc136b5421
+          path: pacbrew-repo
+          persist-credentials: false
+
+      - name: Set up build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y             autoconf             automake             build-essential             clang-18             cmake             curl             git             libarchive-tools             libtool             lld-18             makepkg             meson             pacman-package-manager             pkg-config             python3
+          python3 -c 'import sys; assert sys.version_info >= (3, 11), sys.version'
+
+      - name: Build PS5 payload SDK
+        working-directory: pacbrew-repo/sdk
+        run: |
+          makepkg -c -f
+          shopt -s nullglob
+          packages=(./ps5-payload-sdk-*.pkg.tar.*)
+          (( ${#packages[@]} == 1 )) || {
+            printf 'expected one payload SDK package, found %d\n' "${#packages[@]}" >&2
+            exit 1
+          }
+          sudo pacman --noconfirm -U "${packages[0]}"
+
+      - name: Build PS5 libc++ headers
+        working-directory: pacbrew-repo/libcxx
+        run: |
+          makepkg -c -f
+          shopt -s nullglob
+          packages=(./ps5-payload-libcxx-*.pkg.tar.*)
+          (( ${#packages[@]} == 1 )) || {
+            printf 'expected one payload libc++ package, found %d\n' "${#packages[@]}" >&2
+            exit 1
+          }
+          sudo pacman --noconfirm -U "${packages[0]}"
+
+      - name: Build patched runtime variants
+        working-directory: ampr_emu
+        run: |
+          rm -rf --             out/payload-sdk-loose-stdio             out/payload-sdk-packed-stdio             out/payload-sdk-variants
+          make runtime-variants PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
+
+      - name: Upload patched runtime variants
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: libSceAmpr-io-compat-debug-runtime-variants
+          path: |
+            ampr_emu/out/payload-sdk-variants/*.prx
+            ampr_emu/out/payload-sdk-variants/*.sprx
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

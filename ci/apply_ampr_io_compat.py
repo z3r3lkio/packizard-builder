@@ -2397,14 +2397,6 @@ kernel_open_insert = """    if (handled) {
         if (packedFd == SCE_KERNEL_ERROR_EIO && entry.path) {
             errno = 0;
             const int physical = ampr_real_posix_open(entry.path, flags, mode);
-#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
-            AMPR_KLOGF("[AMPR_APR_IO] indexed-pack-eio-physical-fallback fileId=%u path=%s packedRc=0x%x fd=%d errno=%d",
-                       fileId,
-                       entry.path,
-                       packedFd,
-                       physical,
-                       physical == -1 ? errno : 0);
-#endif
             if (physical >= 0) {
                 if (physicalFd) *physicalFd = true;
                 return physical;

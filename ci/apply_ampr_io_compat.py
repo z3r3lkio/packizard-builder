@@ -2088,9 +2088,24 @@ policy_anchor = """static void apr_update_read_desc_fd_policy(AprAioReadDesc& rd
     if (!rd.fileMetadataValid) {
         return;
     }
-    rd.bypassFdCache = apr_read_is_single_quantum_full_file(
-        rd.offset, rd.length, static_cast<uint64_t>(rd.fileSize)) &&
-        !promoteFullFile;
+    const bool fullFile = apr_read_is_single_quantum_full_file(
+        rd.offset, rd.length, static_cast<uint64_t>(rd.fileSize));
+    // Compatibility mode: full-file APR reads should not be diverted into the
+    // shared FD cache merely because the adaptive policy promotes them. On
+    // mounted/virtual filesystems this hides the physical open behind the cache
+    // and bypasses the direct-open/AIO recovery path. Keep full-file reads on
+    // the direct descriptor path; partial/streaming reads still use the cache.
+    rd.bypassFdCache = fullFile;
+    (void)promoteFullFile;
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+    if (fullFile) {
+        AMPR_KLOGF("[AMPR_APR_IO] full-file-direct fileId=%u size=0x%llx off=0x%llx len=0x%llx",
+                   rd.fileId,
+                   (unsigned long long)rd.fileSize,
+                   (unsigned long long)rd.offset,
+                   (unsigned long long)rd.length);
+    }
+#endif
 }
 """
 policy_insert = """static void apr_update_read_desc_fd_policy(AprAioReadDesc& rd,

@@ -2146,6 +2146,10 @@ sync_anchor = """        if (chain.ownerDesc.fd < 0) {
                     if (acquireRc == SCE_KERNEL_ERROR_EMFILE) {
                         note_emfile_event();
                     }
+                    // A real open EAGAIN/EMFILE/ENFILE publishes pressure in
+                    // the fd layer. A local admission EAGAIN does not. Sample
+                    // the generation for every deferred result so the two cases
+                    // stay distinct without another result/status channel.
                     if (fd_pressure_active(failureNowNs)) {
                         admission.current = false;
                     }

@@ -2306,6 +2306,81 @@ caller_insert = """        if (outcome.result == DirectReadSubmitResult::Complet
 """
 replace_once(APR_REACTOR, caller_anchor, caller_insert)
 
+
+# When pack lookup itself returns EIO for a full-file direct read, the reactor
+# never reaches the physical open path. This can happen when the immutable index
+# and pack manifest disagree for a file that still exists loose on the mounted
+# filesystem. Prefer the real loose file only for this EIO case; if no physical
+# file exists, preserve the original pack failure.
+packed_eio_anchor = """        if (packedHandled) {
+            if (packedFd < 0) {
+                if (outRc) *outRc = packedFd;
+                AMPR_FILE_STATUS_LOGF("apr.file.open status=failed reason=packed-direct job=0x%llx fileId=%u path=%s rc=0x%x",
+                                      (unsigned long long)jobId,
+                                      rd.fileId,
+                                      directEntry.path,
+                                      packedFd);
+                return false;
+            }
+            rd.fd = packedFd;
+            rd.closeAfter = true;
+            rd.closeAfterPhysical = false;
+            AMPR_FILE_STATUS_LOGF("apr.file.open status=opened mode=single-quantum-full-file-packed job=0x%llx fileId=%u path=%s fd=%d",
+                                  (unsigned long long)jobId,
+                                  rd.fileId,
+                                  directEntry.path,
+                                  packedFd);
+            return true;
+        }
+"""
+packed_eio_insert = """        if (packedHandled) {
+            if (packedFd < 0) {
+                if (packedFd == SCE_KERNEL_ERROR_EIO && directEntry.path) {
+                    errno = 0;
+                    int physicalFd = ampr_real_posix_open(
+                        directEntry.path,
+                        kAprAioOpenFlags,
+                        static_cast<SceKernelMode>(0));
+                    const int physicalErrno = physicalFd == -1 ? errno : 0;
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+                    AMPR_KLOGF("[AMPR_APR_IO] packed-eio-physical-fallback fileId=%u path=%s packedRc=0x%x fd=%d errno=%d",
+                               rd.fileId,
+                               directEntry.path,
+                               packedFd,
+                               physicalFd,
+                               physicalErrno);
+#endif
+                    if (physicalFd >= 0) {
+                        rd.fd = physicalFd;
+                        rd.closeAfter = true;
+                        rd.closeAfterPhysical = true;
+                        ampr_index_fd_direct_note_open();
+                        return true;
+                    }
+                }
+                if (outRc) *outRc = packedFd;
+                AMPR_FILE_STATUS_LOGF("apr.file.open status=failed reason=packed-direct job=0x%llx fileId=%u path=%s rc=0x%x",
+                                      (unsigned long long)jobId,
+                                      rd.fileId,
+                                      directEntry.path,
+                                      packedFd);
+                return false;
+            }
+            rd.fd = packedFd;
+            rd.closeAfter = true;
+            rd.closeAfterPhysical = false;
+            AMPR_FILE_STATUS_LOGF("apr.file.open status=opened mode=single-quantum-full-file-packed job=0x%llx fileId=%u path=%s fd=%d",
+                                  (unsigned long long)jobId,
+                                  rd.fileId,
+                                  directEntry.path,
+                                  packedFd);
+            return true;
+        }
+"""
+replace_once(APR_REACTOR, packed_eio_anchor, packed_eio_insert)
+
+print("Applied packed-EIO loose-file fallback for full APR reads")
+
 print("Applied direct synchronous compatibility path for small full-file APR reads")
 
 print("Applied APR physical-open compatibility for mounted filesystems")

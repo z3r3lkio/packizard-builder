@@ -11,6 +11,7 @@ EXPORTS = ROOT / "src" / "sceampr_exports.cpp"
 APR_BRIDGE = ROOT / "src" / "ampr_emu_apr_kernel_bridge.cpp"
 APR_REACTOR = ROOT / "src" / "ampr_emu_apr_reactor.cpp"
 APR_SERVICES = ROOT / "src" / "ampr_emu_apr_services.cpp"
+KERNEL_FILE = ROOT / "include" / "ampr_emu_kernel_file.h"
 
 
 def replace_once(path: Path, old: str, new: str) -> None:
@@ -2378,6 +2379,43 @@ packed_eio_insert = """        if (packedHandled) {
         }
 """
 replace_once(APR_REACTOR, packed_eio_anchor, packed_eio_insert)
+
+
+# General APR fix: cached/partial reads use ampr_open_indexed_or_real(), not the
+# full-file direct branch. If the pack backend claims a file but returns EIO,
+# retry the real loose file before surfacing the pack error. This is safe for
+# truly packed files because the physical open will fail and the original pack
+# error is preserved.
+kernel_open_anchor = """    if (handled) {
+        return packedFd;
+    }
+"""
+kernel_open_insert = """    if (handled) {
+        if (packedFd >= 0) {
+            return packedFd;
+        }
+        if (packedFd == SCE_KERNEL_ERROR_EIO && entry.path) {
+            errno = 0;
+            const int physical = ampr_real_posix_open(entry.path, flags, mode);
+#if AMPR_EMU_PACK_IO_COMPAT_DIAGNOSTICS
+            AMPR_KLOGF("[AMPR_APR_IO] indexed-pack-eio-physical-fallback fileId=%u path=%s packedRc=0x%x fd=%d errno=%d",
+                       fileId,
+                       entry.path,
+                       packedFd,
+                       physical,
+                       physical == -1 ? errno : 0);
+#endif
+            if (physical >= 0) {
+                if (physicalFd) *physicalFd = true;
+                return physical;
+            }
+        }
+        return packedFd;
+    }
+"""
+replace_once(KERNEL_FILE, kernel_open_anchor, kernel_open_insert)
+
+print("Applied general APR indexed-pack EIO loose-file fallback")
 
 print("Applied packed-EIO loose-file fallback for full APR reads")
 

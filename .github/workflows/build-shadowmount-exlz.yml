@@ -139,12 +139,13 @@ jobs:
           p.write_text(src.replace(old_depth, new_depth, 1))
 
           # 3) Custom scanpath= entries replace ShadowMount+'s normal defaults.
-          #    For EXLZ only, always search the built-in standard roots as well.
+          #    Preserve the standard roots too, for both folder-format games
+          #    and EXLZ images, so normal locations keep working.
           p = Path('src/sm_scan.c')
           src = p.read_text()
 
           array_marker = 'static scan_workspace_t g_scan_workspace;\n'
-          array_code = '''static const char *const k_exlz_standard_scan_paths[] =
+          array_code = '''static const char *const k_standard_scan_paths[] =
               SM_DEFAULT_SCAN_PATHS_INITIALIZER;
 
           '''
@@ -154,7 +155,10 @@ jobs:
 
           callback_marker = '''static void collect_scan_candidates_from_manual_root(
           '''
-          callback_code = '''static bool collect_candidate_image_visit(
+          callback_code = '''static sm_scan_tree_dir_visit_t collect_candidate_directory_visit(
+              const char *dir_path, unsigned int depth_from_root, void *ctx_ptr);
+
+          static bool collect_candidate_image_visit(
               const char *image_path, const char *image_name,
               unsigned int depth_from_root, void *ctx_ptr);
 
@@ -168,7 +172,7 @@ jobs:
                                                  depth_from_root, ctx_ptr);
           }
 
-          static void collect_exlz_from_standard_roots(
+          static void collect_standard_roots(
               scan_candidate_t *candidates, int max_candidates,
               int *candidate_count, const scan_app_db_context_t *app_db,
               char discovered_param_roots[][MAX_PATH],
@@ -184,15 +188,16 @@ jobs:
                 .unstable_found_out = unstable_found_out,
             };
             sm_scan_tree_callbacks_t callbacks = {
-                .on_directory = NULL,
+                .on_directory = collect_candidate_directory_visit,
                 .on_image_file = collect_candidate_exlz_image_visit,
             };
 
-            for (int i = 0; k_exlz_standard_scan_paths[i] != NULL; i++) {
+            for (int i = 0; k_standard_scan_paths[i] != NULL; i++) {
               if (should_stop_requested() || runtime_sleep_mode_active())
                 break;
-              const char *root = k_exlz_standard_scan_paths[i];
-              (void)sm_scan_tree_walk(root, root, 0u, 1u, &callbacks, &ctx);
+              const char *root = k_standard_scan_paths[i];
+              unsigned int scan_depth = get_scan_depth_for_root(root);
+              (void)sm_scan_tree_walk(root, root, 0u, scan_depth, &callbacks, &ctx);
             }
           }
 
@@ -202,7 +207,7 @@ jobs:
           src = src.replace(callback_marker, callback_code + callback_marker, 1)
 
           loop_marker = '  collect_scan_candidates_from_manual_list(\n'
-          loop_insert = '''  collect_exlz_from_standard_roots(
+          loop_insert = '''  collect_standard_roots(
               candidates, max_candidates, &candidate_count, &app_db,
               g_scan_workspace.discovered_param_roots,
               &discovered_param_root_count, unstable_found_out);
@@ -216,7 +221,7 @@ jobs:
 
           grep -n -A4 -B2 'exlz' src/sm_image.c
           grep -n -A6 -B3 'sm_scan_tree_walk_exlz_deep' src/sm_scan_tree.c
-          grep -n -A8 -B3 'collect_exlz_from_standard_roots' src/sm_scan.c
+          grep -n -A8 -B3 'collect_standard_roots' src/sm_scan.c
 
       - name: Checkout pacbrew-repo
         uses: actions/checkout@v4

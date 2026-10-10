@@ -13,11 +13,11 @@ jobs:
   shadowmount-exlz:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout ShadowMountPlus 1.7beta4
+      - name: Checkout ShadowMountPlus 1.7beta5
         uses: actions/checkout@v4
         with:
           repository: drakmor/ShadowMountPlus
-          ref: "1.7beta4"
+          ref: "1.7beta5"
           path: ShadowMountPlus
           fetch-depth: 0
 
@@ -256,14 +256,14 @@ jobs:
       - name: Build ShadowMountPlus
         working-directory: ShadowMountPlus
         run: |
-          make clean all VERSION_TAG=1.7beta4-exlz PS5_SCE_STUBS_DIR="$GITHUB_WORKSPACE/ps5-sdk/sce_stubs"
+          make clean all VERSION_TAG=1.7beta5-exlz PS5_SCE_STUBS_DIR="$GITHUB_WORKSPACE/ps5-sdk/sce_stubs"
           file shadowmountplus.elf
           sha256sum shadowmountplus.elf | tee shadowmountplus.elf.sha256
 
       - name: Upload ELF
         uses: actions/upload-artifact@v4
         with:
-          name: shadowmountplus-1.7beta4-exlz-elf
+          name: shadowmountplus-1.7beta5-exlz-elf
           retention-days: 7
           if-no-files-found: error
           path: |

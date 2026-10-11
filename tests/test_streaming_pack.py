@@ -21,7 +21,8 @@ class StreamingPackTests(unittest.TestCase):
         self.assertNotIn("source.read_bytes", source)
         self.assertNotIn("payloads.append", source)
         self.assertIn('source.open("rb")', source)
-        self.assertIn('pack_path.open("w+b")', source)
+        self.assertIn("def open_writer", source)
+        self.assertIn('path.open("w+b")', source)
         self.assertIn("handle.write(stored)", source)
 
 

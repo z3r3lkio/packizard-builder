@@ -1,4 +1,5 @@
 """Frozen Packizard packer entry point."""
+import multiprocessing
 import sys
 
 # Respect an explicitly injected packer module (used by diagnostics/tests) while
@@ -14,6 +15,10 @@ install_streaming_pack()
 install_streaming_verify()
 
 if __name__ == "__main__":
+    # Required for ProcessPoolExecutor in PyInstaller-frozen Windows/macOS
+    # workers. Child processes are intercepted here instead of re-running the
+    # packer CLI recursively.
+    multiprocessing.freeze_support()
     for stream in (sys.stdout, sys.stderr):
         if stream is not None:
             stream.reconfigure(encoding="utf-8")

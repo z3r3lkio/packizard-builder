@@ -89,8 +89,8 @@ def verify_streaming(index: Path, root: Path | None, no_progress: bool = False) 
             handle.close()
 
 
-def install() -> None:
-    """Install the bounded verifier into packer.main's module globals."""
-    from packizard_engine import packer
-
-    packer.verify = verify_streaming
+def install(packer_module=None) -> None:
+    """Install the bounded verifier into an existing packer module."""
+    if packer_module is None:
+        from packizard_engine import packer as packer_module
+    packer_module.verify = verify_streaming

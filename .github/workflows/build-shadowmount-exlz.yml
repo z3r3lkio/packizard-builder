@@ -13,11 +13,11 @@ jobs:
   shadowmount-exlz:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout ShadowMountPlus 1.7beta5
+      - name: Checkout ShadowMountPlus 1.7beta5-fix1
         uses: actions/checkout@v4
         with:
           repository: drakmor/ShadowMountPlus
-          ref: "1.7beta5"
+          ref: "1.7-beta5fix1"
           path: ShadowMountPlus
           fetch-depth: 0
 
@@ -172,11 +172,27 @@ jobs:
                                                  depth_from_root, ctx_ptr);
           }
 
+          static bool configured_scan_root_equals(const char *root) {
+            char configured[MAX_PATH];
+            int count = get_scan_path_count();
+            for (int i = 0; i < count; ++i) {
+              if (get_scan_path(i, configured) && strcmp(configured, root) == 0)
+                return true;
+            }
+            return false;
+          }
+
           static void collect_standard_roots(
               scan_candidate_t *candidates, int max_candidates,
               int *candidate_count, const scan_app_db_context_t *app_db,
               char discovered_param_roots[][MAX_PATH],
               int *discovered_param_root_count, bool *unstable_found_out) {
+            // Upstream already scans all standard roots when there are no custom
+            // scanpath= entries. Only supplement the standard roots when custom
+            // scanpaths have replaced those defaults.
+            if (get_custom_scan_path_count() == 0)
+              return;
+
             collect_candidates_walk_ctx_t ctx = {
                 .candidates = candidates,
                 .max_candidates = max_candidates,
@@ -196,6 +212,8 @@ jobs:
               if (should_stop_requested() || runtime_sleep_mode_active())
                 break;
               const char *root = k_standard_scan_paths[i];
+              if (configured_scan_root_equals(root))
+                continue;
               unsigned int scan_depth = get_scan_depth_for_root(root);
               (void)sm_scan_tree_walk(root, root, 0u, scan_depth, &callbacks, &ctx);
             }
@@ -261,14 +279,14 @@ jobs:
       - name: Build ShadowMountPlus
         working-directory: ShadowMountPlus
         run: |
-          make clean all VERSION_TAG=1.7beta5-exlz PS5_SCE_STUBS_DIR="$GITHUB_WORKSPACE/ps5-sdk/sce_stubs"
+          make clean all VERSION_TAG=1.7beta5-fix1-exlz PS5_SCE_STUBS_DIR="$GITHUB_WORKSPACE/ps5-sdk/sce_stubs"
           file shadowmountplus.elf
           sha256sum shadowmountplus.elf | tee shadowmountplus.elf.sha256
 
       - name: Upload ELF
         uses: actions/upload-artifact@v4
         with:
-          name: shadowmountplus-1.7beta5-exlz-elf
+          name: shadowmountplus-1.7beta5-fix1-exlz-elf
           retention-days: 7
           if-no-files-found: error
           path: |

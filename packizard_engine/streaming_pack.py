@@ -604,9 +604,11 @@ def build_streaming(
         raise
 
 
-def install() -> None:
-    """Replace packer.build in the frozen worker with the bounded-memory implementation."""
-    from packizard_engine import packer
+def install(packer_module=None) -> None:
+    """Install the bounded-memory builder into an existing packer module."""
+    if packer_module is None:
+        from packizard_engine import packer as packer_module
+    packer = packer_module
 
     def _build(root, ampr_index, output, config_path, excludes, no_progress=False):
         return build_streaming(

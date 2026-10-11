@@ -4,9 +4,19 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def verify_streaming(index: Path, root: Path | None, no_progress: bool = False) -> dict:
-    # Import lazily to avoid a circular dependency when the frozen worker patches packer.verify.
-    from packizard_engine import packer as p
+def verify_streaming(
+    index: Path,
+    root: Path | None,
+    no_progress: bool = False,
+    *,
+    packer_module=None,
+) -> dict:
+    # Source CLI execution does not necessarily have the repository root on
+    # sys.path. Prefer the module explicitly bound by install(); only resolve
+    # the package import when verify_streaming is called independently.
+    if packer_module is None:
+        from packizard_engine import packer as packer_module
+    p = packer_module
 
     started = p.time.monotonic()
     manifest = p.load_manifest(index)
@@ -93,4 +103,13 @@ def install(packer_module=None) -> None:
     """Install the bounded verifier into an existing packer module."""
     if packer_module is None:
         from packizard_engine import packer as packer_module
-    packer_module.verify = verify_streaming
+
+    def _verify(index, root, no_progress=False):
+        return verify_streaming(
+            index,
+            root,
+            no_progress,
+            packer_module=packer_module,
+        )
+
+    packer_module.verify = _verify

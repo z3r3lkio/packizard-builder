@@ -7,7 +7,10 @@ header after the deterministic build id is known.
 """
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor
+import os
 from pathlib import Path
+import sys
 
 from packizard_container import (
     CHUNK_CODEC_LZ4,
@@ -35,6 +38,145 @@ from packizard_container import (
     safe_output_path,
 )
 from packizard_lz4 import PackizardLz4Codec
+
+
+def _rule_value(rule: dict, pack_cfg: dict, name: str, default):
+    if isinstance(rule, dict) and name in rule:
+        return rule[name]
+    return pack_cfg.get(name, default)
+
+
+def _encoding_policy(rule: dict, pack_cfg: dict, io_page: int) -> dict:
+    return {
+        "mode": str(_rule_value(rule, pack_cfg, "compression_mode", "hc")).lower(),
+        "level": int(_rule_value(rule, pack_cfg, "compression_level", 9)),
+        "acceleration": max(1, int(_rule_value(rule, pack_cfg, "acceleration", 1))),
+        "min_savings": parse_size(_rule_value(rule, pack_cfg, "min_savings_bytes", 64)),
+        "min_ratio": float(_rule_value(rule, pack_cfg, "min_savings_ratio", 0.01)),
+        "neutral_savings": parse_size(
+            _rule_value(rule, pack_cfg, "io_neutral_min_savings_bytes", "8KiB")
+        ),
+        "neutral_ratio": float(
+            _rule_value(rule, pack_cfg, "io_neutral_min_savings_ratio", 0.125)
+        ),
+        "io_page": io_page,
+    }
+
+
+def _encoded_is_worthwhile(raw_size: int, stored_size: int, policy: dict) -> bool:
+    if raw_size <= 0 or stored_size >= raw_size:
+        return False
+    savings = raw_size - stored_size
+    ratio = savings / raw_size
+    if savings < policy["min_savings"] or ratio < policy["min_ratio"]:
+        return False
+
+    # If both representations consume the same number of runtime I/O pages,
+    # demand the stricter "I/O neutral" threshold. This avoids spending CPU
+    # merely to save bytes that do not reduce physical reads.
+    page = policy["io_page"]
+    raw_pages = align_up(raw_size, page)
+    stored_pages = align_up(stored_size, page)
+    if raw_pages == stored_pages:
+        if savings < policy["neutral_savings"] or ratio < policy["neutral_ratio"]:
+            return False
+    return True
+
+
+def _encode_chunk_task(raw: bytes, policy: dict) -> tuple[bytes, int, int, int]:
+    codec = PackizardLz4Codec()
+    compressed = codec.compress(
+        raw,
+        mode=policy["mode"],
+        level=policy["level"],
+        acceleration=policy["acceleration"],
+    )
+    if _encoded_is_worthwhile(len(raw), len(compressed), policy):
+        return compressed, CHUNK_CODEC_LZ4, crc32(raw), len(raw)
+    return raw, CHUNK_CODEC_RAW, crc32(raw), len(raw)
+
+
+def _sample_block_indices(size: int, block_size: int, max_blocks: int, max_bytes: int) -> list[int]:
+    total = (size + block_size - 1) // block_size
+    if total <= 0:
+        return []
+    by_bytes = max(1, max_bytes // block_size)
+    count = max(1, min(max_blocks, by_bytes, total))
+    if total <= count:
+        return list(range(total))
+    if count == 1:
+        return [total // 2]
+    result = []
+    for sample in range(count):
+        value = sample * (total - 1) // (count - 1)
+        if not result or result[-1] != value:
+            result.append(value)
+    return result
+
+
+def _auto_loose_decision(
+    source: Path,
+    relative: str,
+    rule: dict,
+    shift: int,
+    pack_cfg: dict,
+    io_page: int,
+) -> tuple[bool, str | None]:
+    if not bool(pack_cfg.get("auto_loose_large_files", False)):
+        return False, None
+    if bool(rule.get("force_pack", False)):
+        return False, None
+    if bool(rule.get("hot", False)) and not bool(pack_cfg.get("auto_loose_hot_files", False)):
+        return False, None
+
+    size = source.stat().st_size
+    minimum = parse_size(pack_cfg.get("auto_loose_min_file_size", "64MiB"))
+    if size < minimum or size <= 0:
+        return False, None
+
+    block_size = 1 << shift
+    sample_blocks = int(pack_cfg.get("auto_loose_sample_blocks", 32))
+    sample_bytes = parse_size(pack_cfg.get("auto_loose_sample_bytes", "16MiB"))
+    min_ratio = float(pack_cfg.get("auto_loose_min_savings_ratio", 0.05))
+    max_raw_ratio = float(pack_cfg.get("auto_loose_max_raw_ratio", 0.90))
+    if not 1 <= sample_blocks <= 4096 or sample_bytes <= 0:
+        raise ValueError("auto-loose sampling settings are out of range")
+
+    policy = _encoding_policy(rule, pack_cfg, io_page)
+    indices = _sample_block_indices(size, block_size, sample_blocks, sample_bytes)
+    before = source.stat()
+    sampled = 0
+    stored = 0
+    raw_chunks = 0
+    with source.open("rb") as stream:
+        for block in indices:
+            offset = block * block_size
+            stream.seek(offset)
+            raw = stream.read(min(block_size, size - offset))
+            if not raw:
+                raise RuntimeError(f"source was truncated while sampling: {relative}")
+            encoded, chunk_codec, _crc, raw_len = _encode_chunk_task(raw, policy)
+            sampled += raw_len
+            stored += len(encoded)
+            raw_chunks += chunk_codec == CHUNK_CODEC_RAW
+
+    after = source.stat()
+    if (
+        before.st_size != after.st_size
+        or before.st_mtime_ns != after.st_mtime_ns
+        or getattr(before, "st_ino", None) != getattr(after, "st_ino", None)
+    ):
+        raise RuntimeError(f"source changed while sampling: {relative}")
+
+    savings_ratio = 1.0 - (stored / sampled if sampled else 1.0)
+    raw_ratio = raw_chunks / max(1, len(indices))
+    use_loose = savings_ratio < min_ratio or raw_ratio >= max_raw_ratio
+    if not use_loose:
+        return False, None
+    return True, (
+        f"auto-loose: {relative} size={size} "
+        f"saving={savings_ratio * 100:.2f}% rawBlocks={raw_ratio * 100:.2f}%"
+    )
 
 
 def build_streaming(
@@ -65,11 +207,8 @@ def build_streaming(
     if io_page < 4096 or io_page & (io_page - 1):
         raise ValueError("invalid io_page_size")
 
-    mode = str(pack_cfg.get("compression_mode", "hc")).lower()
-    level = int(pack_cfg.get("compression_level", 9))
-    acceleration = int(pack_cfg.get("acceleration", 1))
-    min_savings = parse_size(pack_cfg.get("min_savings_bytes", 64))
-    min_ratio = float(pack_cfg.get("min_savings_ratio", 0.01))
+    workers = max(1, int(pack_cfg.get("workers", max(1, (os.cpu_count() or 2) - 1))))
+    max_in_flight = max(1, workers * 2)
 
     entries = read_ampridx3(ampr_index)
     strings = StringTable()
@@ -77,8 +216,8 @@ def build_streaming(
     chunks: list[ChunkRecord] = []
     checksums: list[int] = []
     loose: list[str] = []
-    codec = PackizardLz4Codec()
     selected: dict[int, tuple[Path, str, dict, int]] = {}
+    auto_loose_messages: list[str] = []
 
     for file_id, entry in enumerate(entries, 1):
         relative = asset_relative_path(entry.path)
@@ -92,7 +231,16 @@ def build_streaming(
         if should_pack:
             if source.stat().st_size != entry.size:
                 raise RuntimeError(f"indexed packed source size changed: {relative}")
-            selected[file_id] = (source, relative, rule, shift)
+            use_loose, message = _auto_loose_decision(
+                source, relative, rule, shift, pack_cfg, io_page
+            )
+            if use_loose:
+                loose.append(relative)
+                if message:
+                    auto_loose_messages.append(message)
+                    print(f"[INFO] {message}", file=sys.stderr, flush=True)
+            else:
+                selected[file_id] = (source, relative, rule, shift)
         else:
             loose.append(relative)
 
@@ -140,60 +288,64 @@ def build_streaming(
                 first_chunk = len(chunks)
                 logical_size = 0
 
+                policy = _encoding_policy(rule, pack_cfg, io_page)
+
+                def commit_encoded(result):
+                    nonlocal logical_size, done_bytes
+                    stored, chunk_codec, checksum, raw_len = result
+                    aligned = align_up(handle.tell(), io_page)
+                    gap = aligned - handle.tell()
+                    if gap:
+                        handle.write(b"\x00" * gap)
+                    chunk_offset = handle.tell()
+                    handle.write(stored)
+
+                    placement_flags = CHUNK_FLAG_PAGE_ALIGNED
+                    if len(stored) <= io_page:
+                        placement_flags |= CHUNK_FLAG_PAGE_CONTAINED
+                    chunks.append(
+                        ChunkRecord(
+                            chunk_offset,
+                            len(stored),
+                            raw_len,
+                            0,
+                            chunk_codec,
+                            placement_flags,
+                        )
+                    )
+                    checksums.append(checksum)
+                    logical_size += raw_len
+                    done_bytes += raw_len
+                    progress(
+                        "packing",
+                        int(done_bytes * 80 / max(1, total_bytes)),
+                        f"packing {relative}",
+                        started,
+                        no_progress,
+                    )
+
                 with source.open("rb") as src:
-                    while True:
-                        raw = src.read(block_size)
-                        if not raw:
-                            break
-
-                        compressed = codec.compress(
-                            raw,
-                            mode=str(rule.get("compression_mode", mode)),
-                            level=int(rule.get("compression_level", level)),
-                            acceleration=acceleration,
-                        )
-                        savings = len(raw) - len(compressed)
-                        use_lz4 = (
-                            len(raw) > 0
-                            and savings >= min_savings
-                            and savings / max(1, len(raw)) >= min_ratio
-                        )
-                        stored = compressed if use_lz4 else raw
-                        if not stored and not raw:
-                            continue
-
-                        aligned = align_up(handle.tell(), io_page)
-                        gap = aligned - handle.tell()
-                        if gap:
-                            handle.write(b"\x00" * gap)
-                        chunk_offset = handle.tell()
-                        handle.write(stored)
-
-                        placement_flags = CHUNK_FLAG_PAGE_ALIGNED
-                        if len(stored) <= io_page:
-                            placement_flags |= CHUNK_FLAG_PAGE_CONTAINED
-                        chunks.append(
-                            ChunkRecord(
-                                chunk_offset,
-                                len(stored),
-                                len(raw),
-                                0,
-                                CHUNK_CODEC_LZ4 if use_lz4 else CHUNK_CODEC_RAW,
-                                placement_flags,
-                            )
-                        )
-                        checksums.append(crc32(raw))
-                        logical_size += len(raw)
-                        done_bytes += len(raw)
-                        progress(
-                            "packing",
-                            int(done_bytes * 80 / max(1, total_bytes)),
-                            f"packing {relative}",
-                            started,
-                            no_progress,
-                        )
-                        # raw/compressed/stored fall out of scope on the next iteration;
-                        # no game-sized payload collection is retained.
+                    if workers == 1:
+                        while True:
+                            raw = src.read(block_size)
+                            if not raw:
+                                break
+                            commit_encoded(_encode_chunk_task(raw, policy))
+                    else:
+                        # Bounded producer/consumer pipeline. Results are committed in
+                        # source order, preserving deterministic chunk tables while
+                        # compression runs on multiple CPU cores.
+                        with ProcessPoolExecutor(max_workers=workers) as pool:
+                            pending = []
+                            while True:
+                                while len(pending) < max_in_flight:
+                                    raw = src.read(block_size)
+                                    if not raw:
+                                        break
+                                    pending.append(pool.submit(_encode_chunk_task, raw, policy))
+                                if not pending:
+                                    break
+                                commit_encoded(pending.pop(0).result())
 
                 if logical_size != entry.size:
                     raise RuntimeError(
@@ -273,6 +425,11 @@ def build_streaming(
             "packed_files": len(selected),
             "loose_paths": sorted(loose),
             "engine": version,
+            "workers": workers,
+            "auto_loose_paths": sorted(
+                message.split(": ", 1)[1].split(" size=", 1)[0]
+                for message in auto_loose_messages
+            ),
         }
     except Exception:
         pack_path.unlink(missing_ok=True)

@@ -323,6 +323,7 @@ if __name__ == "__main__":
     from streaming_pack import install as _install_streaming_pack
     from streaming_verify import install as _install_streaming_verify
 
-    _install_streaming_pack()
-    _install_streaming_verify()
+    current_module = sys.modules[__name__]
+    _install_streaming_pack(current_module)
+    _install_streaming_verify(current_module)
     raise SystemExit(main())

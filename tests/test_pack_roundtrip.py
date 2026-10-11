@@ -173,7 +173,7 @@ class PackRoundTripTests(unittest.TestCase):
         (source / "assets").mkdir(parents=True)
         # Four equally sized incompressible files distribute 2+2 across two lanes.
         for index in range(4):
-            (source / "assets" / f"part{index}.bin").write_bytes(
+            (source / "assets" / f"part{index}.uasset").write_bytes(
                 bytes(((byte + index * 37) & 0xFF) for byte in range(256)) * 320
             )
 

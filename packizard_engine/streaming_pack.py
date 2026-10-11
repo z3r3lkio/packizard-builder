@@ -258,6 +258,7 @@ def build_streaming(
     pack_path.parent.mkdir(parents=True, exist_ok=True)
     payload_offset = io_page
 
+    executor = ProcessPoolExecutor(max_workers=workers) if workers > 1 else None
     try:
         with pack_path.open("w+b") as handle:
             # Reserve the fixed header/page. The real header depends on build_id,
@@ -334,18 +335,18 @@ def build_streaming(
                     else:
                         # Bounded producer/consumer pipeline. Results are committed in
                         # source order, preserving deterministic chunk tables while
-                        # compression runs on multiple CPU cores.
-                        with ProcessPoolExecutor(max_workers=workers) as pool:
-                            pending = []
-                            while True:
-                                while len(pending) < max_in_flight:
-                                    raw = src.read(block_size)
-                                    if not raw:
-                                        break
-                                    pending.append(pool.submit(_encode_chunk_task, raw, policy))
-                                if not pending:
+                        # compression runs on multiple CPU cores. The executor lives
+                        # for the whole pack job rather than being recreated per file.
+                        pending = []
+                        while True:
+                            while len(pending) < max_in_flight:
+                                raw = src.read(block_size)
+                                if not raw:
                                     break
-                                commit_encoded(pending.pop(0).result())
+                                pending.append(executor.submit(_encode_chunk_task, raw, policy))
+                            if not pending:
+                                break
+                            commit_encoded(pending.pop(0).result())
 
                 if logical_size != entry.size:
                     raise RuntimeError(
@@ -416,6 +417,9 @@ def build_streaming(
             )
             Path(str(index_path) + ".runtime").write_bytes(settings.encode(build_id))
 
+        if executor is not None:
+            executor.shutdown(wait=True)
+            executor = None
         progress("packing", 100, "Packizard pack complete", started, no_progress)
         return {
             "index": str(index_path),
@@ -432,6 +436,8 @@ def build_streaming(
             ),
         }
     except Exception:
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
         pack_path.unlink(missing_ok=True)
         raise
 

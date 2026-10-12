@@ -338,6 +338,19 @@ public sealed class ProsperoPs5InnerImageAssembler
                     afidOrder.Add(f);
         // Any files directly in uroot come after the sce_sys subtree, ordinal (already covered by the
         // loop above because uroot is in dirsPreOrder and is not under sce_sys).
+        if (!_compress)
+        {
+            // Publishing Tools / MkPFS stored-mode AFID order: keystone first, then the rest of
+            // sce_sys by full path, then every other file by full path. Empty-file handling is
+            // irrelevant to the deterministic fixture but the ordering remains stable for them.
+            static int StoredGroup(FileNode f) =>
+                IsKeystone(f.FullPath) ? 0 :
+                f.FullPath.StartsWith("/sce_sys/", StringComparison.Ordinal) ? 1 : 2;
+            afidOrder = afidOrder
+                .OrderBy(StoredGroup)
+                .ThenBy(f => f.FullPath, StringComparer.Ordinal)
+                .ToList();
+        }
         for (uint a = 0; a < afidOrder.Count; a++)
             afidOrder[(int)a].Afid = a;
 

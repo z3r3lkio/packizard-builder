@@ -60,6 +60,13 @@ def write_fixture(root: Path) -> None:
     # A deterministic non-SELF payload named eboot.bin keeps the fixture accepted
     # by both builders while --no-fake-sign / fake_sign_self_modules=false makes
     # executable conversion irrelevant to this filesystem/container parity test.
+    # Supply system-inner inputs explicitly so both builders consume identical
+    # bytes instead of their independent embedded/generated defaults.
+    (root / "sce_sys" / "keystone").write_bytes(b"K" * 0x60)
+    (root / "sce_sys" / "pfs-version.dat").write_bytes(b"01.000.000")
+    (root / "sce_sys" / "about").mkdir()
+    (root / "sce_sys" / "about" / "right.sprx").write_bytes((b"PACKIZARD-RIGHT-SPRX\n" * 128)[:4096])
+
     (root / "eboot.bin").write_bytes((b"PACKIZARD-PARITY-EBOOT\n" * 257)[:8192])
     (root / "data").mkdir()
     (root / "data" / "alpha.dat").write_bytes(bytes(range(256)) * 300)

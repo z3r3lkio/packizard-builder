@@ -83,25 +83,69 @@ public static class PackizardNativeNapsEngine
         var blocks = new List<Block>(data.Count + result.MetadataBlocks.Count + 8);
         BuildDataPlan(data, blocks);
 
-        // One logical hole descriptor spans the fixed reserve between DATA and metadata.  It starts at the
-        // true DATA end (not align-down), so it never overlaps a final partial DATA block.  u2c interval
-        // coverage may map many U-blocks to this one descriptor without manufacturing CblockInfo density.
         if (dataEnd < metaBase)
         {
-            blocks.Add(new Block
+            if (result.StoredParityMode)
             {
-                StartRun = false,
-                OnDiskOffset = result.BlockInfoOnDiskOffset,
-                LogicalOffset = dataEnd,
-                LogicalLength = checked(metaBase - dataEnd),
-                EvenChunkCompressedLength = 8,
-                StreamLength = 0x10,
-                Even = 0,
-                Odd = 1,
-                Kde = 4,
-                Shuffle = 0,
-                Region = "padding",
-            });
+                // Publishing Tools / MkPFS stored mode describes the reserve as 256 KiB logical
+                // zero chunks. Every whole chunk re-anchors to the same physical 16-byte fill pair;
+                // a final partial chunk consumes the second 16-byte pair immediately after it.
+                long gapLength = checked(metaBase - dataEnd);
+                long whole = gapLength / UBlock;
+                int rest = checked((int)(gapLength % UBlock));
+                for (long i = 0; i < whole; i++)
+                {
+                    blocks.Add(new Block
+                    {
+                        StartRun = true,
+                        OnDiskOffset = result.BlockInfoOnDiskOffset,
+                        LogicalOffset = checked(dataEnd + i * UBlock),
+                        LogicalLength = UBlock,
+                        EvenChunkCompressedLength = 8,
+                        StreamLength = 0x10,
+                        Even = 0,
+                        Odd = 1,
+                        Kde = 4,
+                        Shuffle = 0,
+                        Region = $"padding/whole={i}",
+                    });
+                }
+                if (rest > 0)
+                {
+                    blocks.Add(new Block
+                    {
+                        StartRun = false,
+                        OnDiskOffset = checked(result.BlockInfoOnDiskOffset + 0x10),
+                        LogicalOffset = checked(dataEnd + whole * UBlock),
+                        LogicalLength = rest,
+                        EvenChunkCompressedLength = 8,
+                        StreamLength = 0x10,
+                        Even = 0,
+                        Odd = 1,
+                        Kde = 4,
+                        Shuffle = 0,
+                        Region = "padding/rest",
+                    });
+                }
+            }
+            else
+            {
+                // Normal Packizard mode deliberately keeps one sparse descriptor for the whole reserve.
+                blocks.Add(new Block
+                {
+                    StartRun = false,
+                    OnDiskOffset = result.BlockInfoOnDiskOffset,
+                    LogicalOffset = dataEnd,
+                    LogicalLength = checked(metaBase - dataEnd),
+                    EvenChunkCompressedLength = 8,
+                    StreamLength = 0x10,
+                    Even = 0,
+                    Odd = 1,
+                    Kde = 4,
+                    Shuffle = 0,
+                    Region = "padding",
+                });
+            }
         }
 
         IReadOnlyList<ProsperoInnerMetaBlockChunk> metaChunks = result.MetadataBlocks;

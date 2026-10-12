@@ -16,6 +16,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.IO;
+using LibProsperoPkg.PFS.Compression;
 
 namespace LibProsperoPkg.PFS;
 
@@ -92,6 +93,10 @@ public sealed class ProsperoPs5InnerImageResult
 
     /// <summary>Logical base of the metadata region in the mount (= Ndblock*64K - MetadataPlaintext.Length).</summary>
     public long MetaBaseLogical { get; init; }
+
+    /// <summary>True when the inner image follows MkPFS/Publishing Tools stored-mode chunk geometry.</summary>
+    public bool StoredParityMode { get; init; }
+
 }
 
 /// <summary>One file's on-disk + logical placement in the assembled inner image (afid order).</summary>
@@ -333,6 +338,19 @@ public sealed class ProsperoPs5InnerImageAssembler
                     afidOrder.Add(f);
         // Any files directly in uroot come after the sce_sys subtree, ordinal (already covered by the
         // loop above because uroot is in dirsPreOrder and is not under sce_sys).
+        if (!_compress)
+        {
+            // Publishing Tools / MkPFS stored-mode AFID order: keystone first, then the rest of
+            // sce_sys by full path, then every other file by full path. Empty-file handling is
+            // irrelevant to the deterministic fixture but the ordering remains stable for them.
+            static int StoredGroup(FileNode f) =>
+                IsKeystone(f.FullPath) ? 0 :
+                f.FullPath.StartsWith("/sce_sys/", StringComparison.Ordinal) ? 1 : 2;
+            afidOrder = afidOrder
+                .OrderBy(StoredGroup)
+                .ThenBy(f => f.FullPath, StringComparer.Ordinal)
+                .ToList();
+        }
         for (uint a = 0; a < afidOrder.Count; a++)
             afidOrder[(int)a].Afid = a;
 
@@ -367,8 +385,9 @@ public sealed class ProsperoPs5InnerImageAssembler
             WholeBlockRaw = f.WholeBlockRaw,
             OwnerFlag = f.Afid == 0 ? 0u : 1u,
         }).ToArray();
-        PackizardNativeDataStreamResult dataStream =
-            PackizardNativeDataStream.Build(nativeSources, nativeDataPath);
+        PackizardNativeDataStreamResult dataStream = _compress
+            ? PackizardNativeDataStream.Build(nativeSources, nativeDataPath)
+            : BuildStoredParityDataStream(afidOrder, nativeDataPath);
         if (dataStream.LogicalLength != cursor)
             throw new InvalidOperationException(
                 $"Packizard DATA logical length mismatch: {dataStream.LogicalLength:N0}/{cursor:N0}.");
@@ -416,7 +435,7 @@ public sealed class ProsperoPs5InnerImageAssembler
         BuildDirents(uroot);
 
         // ---- 5. Build the metadata nodes in inode order. ------------------------------------------
-        var nodes = BuildNodes(uroot, dirsPreOrder, fileNodes, dataBlocks,
+        var nodes = BuildNodes(uroot, dirsPreOrder, fileNodes, dataBlocks, dataStream.LogicalLength,
             superRootInode, inodeFltInode, aprFltInode, afidTableInode, out long ndblock);
 
         // ---- 6. Build metadata plaintext. ----------------------------------------------------------
@@ -460,6 +479,7 @@ public sealed class ProsperoPs5InnerImageAssembler
             MetadataBlocks = metaBlocks,
             DataEndLogical = dataEndLogical,
             MetaBaseLogical = metaBaseLogical,
+            StoredParityMode = !_compress,
         };
         temps.Release(imageFilePath);
         return result;
@@ -603,23 +623,37 @@ public sealed class ProsperoPs5InnerImageAssembler
     // ---- Node model + geometry ---------------------------------------------------------------------
 
     private List<ProsperoPs5MetaNode> BuildNodes(
-        Dir uroot, List<Dir> dirsPreOrder, List<FileNode> fileNodes, long dataBlocks,
+        Dir uroot, List<Dir> dirsPreOrder, List<FileNode> fileNodes, long dataBlocks, long dataEndLogical,
         uint superRootInode, uint inodeFltInode, uint aprFltInode, uint afidTableInode, out long ndblock)
     {
         // Metadata-region layout (in the logical mount, after the data region): one block each for the
         // super-root dirents, the inode/apr flat-path tables, the afid table, then every directory's
         // dirent block (uroot, sub-directories in pre-order). Their logical offsets are consecutive
         // 64 KiB blocks starting at the metadata-region base.
-        int metadataContentBlocks = 1 /*super-root dirents*/ + 3 /*flt/apr/afid*/ + dirsPreOrder.Count /*dir dirents*/ + 1 /*trailing*/;
-        // PFSv3 mount geometry: after the on-disk data region (dataBlocks = the block-aligned end of
-        // the packed data files, i.e. the block-info table's block index) the mount leaves a fixed 61-block
-        // reserve, then the metadata plaintext (superblock + inode table + content blocks). The super-root
-        // dirents block (metaBase) is the third metadata block, so metaBase = dataBlocks + 61 + 2. Ndblock is
-        // the end of the metadata region = metaBase + metadataContentBlocks.
-        const long MetadataReserveBlocks = 61;
-        long metaBaseBlock = dataBlocks + MetadataReserveBlocks + 2;
-        long metaBase = metaBaseBlock * BlockSize;
-        ndblock = metaBaseBlock + metadataContentBlocks;
+        // Metadata plaintext begins with [superblock][inode table], then the content tables below.
+        // MkPFS/Publishing Tools stored mode does not append LibProspero's historical trailing empty block.
+        int metadataContentBlocks = 1 /*super-root dirents*/ + 3 /*flt/apr/afid*/ + dirsPreOrder.Count /*dir dirents*/
+            + (_compress ? 1 : 0) /*legacy trailing block on the normal compressed path*/;
+
+        long metadataStartBlock;
+        if (_compress)
+        {
+            // Preserve Packizard's established normal-profile geometry.
+            const long MetadataReserveBlocks = 61;
+            metadataStartBlock = dataBlocks + MetadataReserveBlocks;
+        }
+        else
+        {
+            // Publishing Tools / MkPFS stored-mode rule:
+            // MetadataBase = (ceil(DataEnd / 256 KiB) + 15) * 256 KiB.
+            const long UBlock = 0x40000;
+            metadataStartBlock = checked(((dataEndLogical + UBlock - 1) / UBlock + 15) * (UBlock / BlockSize));
+        }
+
+        // Nodes below point at metadata content after the superblock + inode table.
+        long metaBaseBlock = checked(metadataStartBlock + 2);
+        long metaBase = checked(metaBaseBlock * BlockSize);
+        ndblock = checked(metaBaseBlock + metadataContentBlocks);
 
         long b = metaBase;
         var nodes = new List<ProsperoPs5MetaNode>();
@@ -767,7 +801,8 @@ public sealed class ProsperoPs5InnerImageAssembler
         };
         foreach (var d in dirsPreOrder)
             blocks.Add(DirentBytes(d.Dirents));
-        blocks.Add(Array.Empty<byte>());
+        if (_compress)
+            blocks.Add(Array.Empty<byte>());
 
         var meta = new ProsperoPs5InnerMetadata(_timeSec, _timeNsec);
         return meta.Build(nodes, ndblock, blocks);
@@ -842,21 +877,49 @@ public sealed class ProsperoPs5InnerImageAssembler
             Data = blockInfo, StoreRaw = true, BlockAligned = true,
         });
 
-        compressedMeta = ProsperoPs5InnerImageBuilder.CompressPayload(
-            metaPlain, storeRaw: !_compress, out var metaPf);
-        metaBlocks = metaPf is null
-            ? RawMetadataBlocks(metaPlain)
-            : metaPf.Blocks.Select(b => new ProsperoInnerMetaBlockChunk(
-                b.CompressedSize, b.UncompressedSize, b.IsMultiChunk,
-                b.FirstChunkCompressedSize)).ToArray();
-
-        metadataOnDisk = AlignUp(blockInfoOnDisk + blockInfo.LongLength, BLK);
-        payloads.Add(new ProsperoPs5InnerPayload
+        if (_compress)
         {
-            Data = compressedMeta, StoreRaw = true, BlockAligned = true,
-        });
+            compressedMeta = ProsperoPs5InnerImageBuilder.CompressPayload(
+                metaPlain, storeRaw: false, out var metaPf);
+            metaBlocks = metaPf is null
+                ? RawMetadataBlocks(metaPlain)
+                : metaPf.Blocks.Select(b => new ProsperoInnerMetaBlockChunk(
+                    b.CompressedSize, b.UncompressedSize, b.IsMultiChunk,
+                    b.FirstChunkCompressedSize)).ToArray();
 
-        imageLength = checked(metadataOnDisk + compressedMeta.LongLength);
+            metadataOnDisk = AlignUp(blockInfoOnDisk + blockInfo.LongLength, BLK);
+            payloads.Add(new ProsperoPs5InnerPayload
+            {
+                Data = compressedMeta, StoreRaw = true, BlockAligned = true,
+            });
+            imageLength = checked(metadataOnDisk + compressedMeta.LongLength);
+        }
+        else
+        {
+            // Publishing Tools / MkPFS stored mode places the metadata payload behind a PFSv3
+            // PFSC container header.  The header is not part of the logical mount and NAPS starts
+            // at the first raw metadata byte, so keep MetadataOnDiskOffset after the header.
+            byte[] storedContainer = ProsperoCompressedPfsFileWriter.WriteStored(
+                metaPlain, level: 7, blockSize: 0x40000);
+            ProsperoCompressedPfsFile storedFile = ProsperoCompressedPfsFile.Parse(storedContainer);
+            int headerLength = checked((int)storedFile.DataOffset);
+            byte[] metadataHeader = storedContainer.AsSpan(0, headerLength).ToArray();
+
+            compressedMeta = metaPlain;
+            metaBlocks = RawMetadataBlocks(metaPlain);
+
+            long headerOnDisk = AlignUp(blockInfoOnDisk + blockInfo.LongLength, BLK);
+            metadataOnDisk = checked(headerOnDisk + headerLength);
+            payloads.Add(new ProsperoPs5InnerPayload
+            {
+                Data = metadataHeader, StoreRaw = true, BlockAligned = true,
+            });
+            payloads.Add(new ProsperoPs5InnerPayload
+            {
+                Data = metaPlain, StoreRaw = true, BlockAligned = false,
+            });
+            imageLength = checked(metadataOnDisk + metaPlain.LongLength);
+        }
         string builtPath = temps.Create();
         long written = new ProsperoPs5InnerImageBuilder().BuildToFile(payloads, builtPath);
         if (written != imageLength)
@@ -930,24 +993,52 @@ public sealed class ProsperoPs5InnerImageAssembler
         pos += blockInfo.Length;
         payloads.Add(new ProsperoPs5InnerPayload { Data = blockInfo, StoreRaw = true, BlockAligned = true });
 
-        logger?.Invoke($"Inner image metadata: Kraken-encoding {metaPlain.Length / 1024d:F1} KiB metadata region...");
-        compressedMeta = ProsperoPs5InnerImageBuilder.CompressPayload(metaPlain, storeRaw: !_compress, out var metaPf);
-        logger?.Invoke($"Inner image metadata encoded: {metaPlain.Length / 1024d:F1} KiB -> {compressedMeta.Length / 1024d:F1} KiB.");
-        // Capture the per-256KiB-block chunk table so the naps generator reuses it (no second Kraken pass).
-        metaBlocks = metaPf is null
-            ? RawMetadataBlocks(metaPlain)
-            : metaPf.Blocks.Select(b => new ProsperoInnerMetaBlockChunk(
-                b.CompressedSize, b.UncompressedSize, b.IsMultiChunk, b.FirstChunkCompressedSize)).ToList();
-        pos = AlignUp(pos, BLK);
-        metadataOnDisk = pos;
-        payloads.Add(new ProsperoPs5InnerPayload
+        logger?.Invoke($"Inner image metadata: {(_compress ? "Kraken-encoding" : "storing")} {metaPlain.Length / 1024d:F1} KiB metadata region...");
+        if (_compress)
         {
-            Data = compressedMeta,
-            StoreRaw = true,
-            BlockAligned = true,
-        });
+            compressedMeta = ProsperoPs5InnerImageBuilder.CompressPayload(metaPlain, storeRaw: false, out var metaPf);
+            metaBlocks = metaPf is null
+                ? RawMetadataBlocks(metaPlain)
+                : metaPf.Blocks.Select(b => new ProsperoInnerMetaBlockChunk(
+                    b.CompressedSize, b.UncompressedSize, b.IsMultiChunk, b.FirstChunkCompressedSize)).ToList();
+            pos = AlignUp(pos, BLK);
+            metadataOnDisk = pos;
+            payloads.Add(new ProsperoPs5InnerPayload
+            {
+                Data = compressedMeta,
+                StoreRaw = true,
+                BlockAligned = true,
+            });
+            imageLength = checked(metadataOnDisk + compressedMeta.LongLength);
+        }
+        else
+        {
+            byte[] storedContainer = ProsperoCompressedPfsFileWriter.WriteStored(
+                metaPlain, level: 7, blockSize: 0x40000);
+            ProsperoCompressedPfsFile storedFile = ProsperoCompressedPfsFile.Parse(storedContainer);
+            int headerLength = checked((int)storedFile.DataOffset);
+            byte[] metadataHeader = storedContainer.AsSpan(0, headerLength).ToArray();
 
-        imageLength = checked(metadataOnDisk + compressedMeta.LongLength);
+            compressedMeta = metaPlain;
+            metaBlocks = RawMetadataBlocks(metaPlain);
+            pos = AlignUp(pos, BLK);
+            long headerOnDisk = pos;
+            payloads.Add(new ProsperoPs5InnerPayload
+            {
+                Data = metadataHeader,
+                StoreRaw = true,
+                BlockAligned = true,
+            });
+            metadataOnDisk = checked(headerOnDisk + headerLength);
+            payloads.Add(new ProsperoPs5InnerPayload
+            {
+                Data = metaPlain,
+                StoreRaw = true,
+                BlockAligned = false,
+            });
+            imageLength = checked(metadataOnDisk + metaPlain.LongLength);
+        }
+        logger?.Invoke($"Inner image metadata encoded: {metaPlain.Length / 1024d:F1} KiB -> physical tail {(imageLength - metadataOnDisk) / 1024d:F1} KiB.");
 
         // File-backed inputs stay on disk even when small. Explicit memory inputs keep
         // the existing small-image path, capped well below the CLR single-array limit.

@@ -1,6 +1,9 @@
 import unittest
+from pathlib import Path
 
 from scripts.compare_mkpfs_fpkg import classify
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class MkPfsParityComparatorTests(unittest.TestCase):
@@ -54,6 +57,62 @@ class MkPfsParityComparatorTests(unittest.TestCase):
         )
         self.assertTrue(result["parity"])
         self.assertFalse(result["critical_differences"])
+
+
+    def test_deterministic_stored_fixture_naps_size_is_672(self):
+        # Fixture topology after applying the public MkPFS stored-mode rules:
+        # 6 file chunks with 3 physical RUN anchors, 15 whole gap chunks plus one
+        # partial gap, 3 metadata chunks, and the terminator.
+        data_std, data_runs = 6, 3
+        gap_whole, gap_partial = 15, 1
+        metadata_std, metadata_runs = 3, 1
+        terminator_std, terminator_runs = 1, 1
+        cblocks = (
+            data_std + data_runs
+            + (2 * gap_whole) + gap_partial
+            + metadata_std + metadata_runs
+            + terminator_std + terminator_runs
+        )
+        self.assertEqual(cblocks, 46)
+
+        inner_blocks = 18
+        file_offsets = 10
+        u2c_groups = 3
+        raw_size = (
+            16
+            + inner_blocks * 8
+            + file_offsets * 6
+            + u2c_groups * 10
+            + cblocks * 9
+        )
+        self.assertEqual(raw_size, 664)
+        self.assertEqual((raw_size + 15) // 16 * 16, 672)
+
+    def test_stored_inner_override_tracks_mkpfs_geometry(self):
+        source = (ROOT / "bridge" / "overrides" / "ProsperoPs5InnerImageAssembler.cs").read_text(encoding="utf-8")
+        self.assertIn("const int Half = 0x20000;", source)
+        self.assertIn("BuildStoredParityDataStream", source)
+        self.assertIn("StoredParityMode = !_compress", source)
+        self.assertIn("ProsperoCompressedPfsFileWriter.WriteStored", source)
+        self.assertIn("storedFile.DataOffset", source)
+        self.assertIn("dataEndLogical + UBlock - 1", source)
+        self.assertIn("+ 15) * (UBlock / BlockSize)", source)
+
+    def test_stored_naps_gap_uses_mkpfs_ublock_topology(self):
+        source = (
+            ROOT / "vendor" / "LibProsperoPKG" / "src" / "LibProsperoPkg" / "PKG"
+            / "PackizardNativeNapsEngine.cs"
+        ).read_text(encoding="utf-8")
+        self.assertIn("if (result.StoredParityMode)", source)
+        self.assertIn("long whole = gapLength / UBlock;", source)
+        self.assertIn("StartRun = true", source)
+        self.assertIn("padding/rest", source)
+
+    def test_fih_profile_uses_files_plus_two_and_physical_inner_blocks(self):
+        source = (ROOT / "scripts" / "libprospero_fih_profile.py").read_text(encoding="utf-8")
+        self.assertIn("asmResult.Placements.Count + 2", source)
+        self.assertIn("asmResult.ImageLength + BlockSize - 1", source)
+        self.assertIn("nwonly && nwonlyNdblock > 0", source)
 
 
 if __name__ == "__main__":

@@ -61,6 +61,7 @@ internal static class Program
     private const string EngineVersion = "2.6.0";
     private const string EngineRef = "748eabf1b7d17819528cabf367d8e27109d8fce3";
     private const string PprGuiReferenceVersion = "0.6.8";
+    private const string MkPfsOracleRef = "dfca7367897a38f9ad425172f6f4f3f84b40d0c4";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = false,
@@ -92,6 +93,7 @@ internal static class Program
                     engineRef = EngineRef,
                     keysAvailable = ProsperoPackageBuilder.KeysAvailable,
                     pprGuiReferenceVersion = PprGuiReferenceVersion,
+                    mkpfsOracleRef = MkPfsOracleRef,
                 });
                 return 0;
             }

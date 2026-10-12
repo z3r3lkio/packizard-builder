@@ -13,6 +13,7 @@ REF_FILE = ROOT / "bridge" / "LIBPROSPERO_REF"
 VERSION_FILE = ROOT / "bridge" / "LIBPROSPERO_VERSION"
 VENDOR_DIR = ROOT / "vendor" / "LibProsperoPKG"
 PROJECT = ROOT / "bridge" / "Packizard.PkgBridge" / "Packizard.PkgBridge.csproj"
+ASSEMBLER_OVERRIDE = ROOT / "bridge" / "overrides" / "ProsperoPs5InnerImageAssembler.cs"
 
 from libprospero_cnt_drm_profile import apply_cnt_drm_profile
 from libprospero_fih_extract_fix import apply_fih_extract_fix
@@ -67,6 +68,13 @@ def main() -> int:
             raise SystemExit(f"Pinned LibProsperoPKG source is missing: {VENDOR_DIR}")
     else:
         ref = ensure_upstream()
+
+    assembler_target = VENDOR_DIR / "src" / "LibProsperoPkg" / "PFS" / "ProsperoPs5InnerImageAssembler.cs"
+    if not ASSEMBLER_OVERRIDE.is_file():
+        raise SystemExit(f"Packizard inner assembler override is missing: {ASSEMBLER_OVERRIDE}")
+    if not assembler_target.is_file():
+        raise SystemExit(f"Pinned LibProsperoPKG assembler target is missing: {assembler_target}")
+    shutil.copy2(ASSEMBLER_OVERRIDE, assembler_target)
 
     try:
         profile_changed = apply_fih_reference_profile(VENDOR_DIR)

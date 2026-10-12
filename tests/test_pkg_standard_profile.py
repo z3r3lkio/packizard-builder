@@ -117,8 +117,20 @@ class StandardPkgProfileTests(unittest.TestCase):
 
         self.assertIn("bool compress = true", override)
         self.assertIn("private readonly bool _compress;", override)
-        self.assertIn("if (!_compress || policy ==", override)
+        self.assertIn("if (!_compress", override)
         self.assertIn("storeRaw: !_compress", override)
+
+        # Compatibility surface consumed by Packizard's native streaming/NAPS/SI path.
+        self.assertIn("public string? ImageFilePath { get; init; }", override)
+        self.assertIn("public long ImageLength { get; init; }", override)
+        self.assertIn("IReadOnlyList<PackizardInnerDataBlock> DataBlocks", override)
+        self.assertIn("bool preserveCntMetadataInInner = false", override)
+        self.assertIn("PackizardNativeDataStream.Build", override)
+
+        # Stored metadata must keep an explicit raw chunk map; an empty map would make
+        # the NAPS generator attempt a fresh Kraken pack and break stored-mode parity.
+        self.assertIn("RawMetadataBlocks(metaPlain)", override)
+        self.assertIn("RawMetadataBlocks(byte[] metadata)", override)
 
     def test_standard_profile_is_complete_and_idempotent(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -54,6 +54,9 @@ internal sealed class BuildRequest
 
     [JsonPropertyName("verify_after_build")]
     public bool VerifyAfterBuild { get; init; } = true;
+
+    [JsonPropertyName("outer_seed_hex")]
+    public string? OuterSeedHex { get; init; }
 }
 
 internal static class Program
@@ -166,6 +169,9 @@ internal static class Program
             GenerateParamJsonIfMissing = request.GenerateParamJsonIfMissing,
             FakeSignSelfModules = request.FakeSignSelfModules,
             LicenseFree = request.LicenseFree,
+            OuterSeed = string.IsNullOrWhiteSpace(request.OuterSeedHex)
+                ? null
+                : Convert.FromHexString(request.OuterSeedHex.Trim()),
         };
         if (!string.IsNullOrWhiteSpace(request.ApplicationDrmType))
             options.ApplicationDrmType = request.ApplicationDrmType.Trim();

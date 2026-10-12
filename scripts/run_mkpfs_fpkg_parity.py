@@ -92,6 +92,7 @@ def packizard_build(bridge: Path, source: Path, output: Path) -> Path:
         "license_free": True,
         "verify_after_build": True,
         "outer_seed_hex": SEED_HEX,
+        "inner_compression": "stored",
     }
     request_path = output.parent / "packizard-request.json"
     request_path.write_text(json.dumps(request), encoding="utf-8")

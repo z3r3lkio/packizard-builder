@@ -130,6 +130,7 @@ public sealed class ProsperoPs5InnerImageAssembler
 
     /// <param name="buildTimeSec">Build timestamp seconds (package c_date/c_time — a deterministic build input).</param>
     /// <param name="buildTimeNsec">Build timestamp nanoseconds fraction.</param>
+    /// <param name="compress">When false, stores DATA and metadata blocks raw for deterministic MkPFS stored-mode parity.</param>
     public ProsperoPs5InnerImageAssembler(long buildTimeSec, uint buildTimeNsec, bool compress = true)
     {
         _timeSec = buildTimeSec;

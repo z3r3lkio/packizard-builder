@@ -93,6 +93,10 @@ public sealed class ProsperoPs5InnerImageResult
 
     /// <summary>Logical base of the metadata region in the mount (= Ndblock*64K - MetadataPlaintext.Length).</summary>
     public long MetaBaseLogical { get; init; }
+
+    /// <summary>True when the inner image follows MkPFS/Publishing Tools stored-mode chunk geometry.</summary>
+    public bool StoredParityMode { get; init; }
+
 }
 
 /// <summary>One file's on-disk + logical placement in the assembled inner image (afid order).</summary>
@@ -368,8 +372,9 @@ public sealed class ProsperoPs5InnerImageAssembler
             WholeBlockRaw = f.WholeBlockRaw,
             OwnerFlag = f.Afid == 0 ? 0u : 1u,
         }).ToArray();
-        PackizardNativeDataStreamResult dataStream =
-            PackizardNativeDataStream.Build(nativeSources, nativeDataPath);
+        PackizardNativeDataStreamResult dataStream = _compress
+            ? PackizardNativeDataStream.Build(nativeSources, nativeDataPath)
+            : BuildStoredParityDataStream(afidOrder, nativeDataPath);
         if (dataStream.LogicalLength != cursor)
             throw new InvalidOperationException(
                 $"Packizard DATA logical length mismatch: {dataStream.LogicalLength:N0}/{cursor:N0}.");
@@ -461,6 +466,7 @@ public sealed class ProsperoPs5InnerImageAssembler
             MetadataBlocks = metaBlocks,
             DataEndLogical = dataEndLogical,
             MetaBaseLogical = metaBaseLogical,
+            StoredParityMode = !_compress,
         };
         temps.Release(imageFilePath);
         return result;

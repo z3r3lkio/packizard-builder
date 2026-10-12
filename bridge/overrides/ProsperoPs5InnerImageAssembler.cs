@@ -416,7 +416,7 @@ public sealed class ProsperoPs5InnerImageAssembler
         BuildDirents(uroot);
 
         // ---- 5. Build the metadata nodes in inode order. ------------------------------------------
-        var nodes = BuildNodes(uroot, dirsPreOrder, fileNodes, dataBlocks,
+        var nodes = BuildNodes(uroot, dirsPreOrder, fileNodes, dataBlocks, dataStream.LogicalLength,
             superRootInode, inodeFltInode, aprFltInode, afidTableInode, out long ndblock);
 
         // ---- 6. Build metadata plaintext. ----------------------------------------------------------
@@ -603,23 +603,37 @@ public sealed class ProsperoPs5InnerImageAssembler
     // ---- Node model + geometry ---------------------------------------------------------------------
 
     private List<ProsperoPs5MetaNode> BuildNodes(
-        Dir uroot, List<Dir> dirsPreOrder, List<FileNode> fileNodes, long dataBlocks,
+        Dir uroot, List<Dir> dirsPreOrder, List<FileNode> fileNodes, long dataBlocks, long dataEndLogical,
         uint superRootInode, uint inodeFltInode, uint aprFltInode, uint afidTableInode, out long ndblock)
     {
         // Metadata-region layout (in the logical mount, after the data region): one block each for the
         // super-root dirents, the inode/apr flat-path tables, the afid table, then every directory's
         // dirent block (uroot, sub-directories in pre-order). Their logical offsets are consecutive
         // 64 KiB blocks starting at the metadata-region base.
-        int metadataContentBlocks = 1 /*super-root dirents*/ + 3 /*flt/apr/afid*/ + dirsPreOrder.Count /*dir dirents*/ + 1 /*trailing*/;
-        // PFSv3 mount geometry: after the on-disk data region (dataBlocks = the block-aligned end of
-        // the packed data files, i.e. the block-info table's block index) the mount leaves a fixed 61-block
-        // reserve, then the metadata plaintext (superblock + inode table + content blocks). The super-root
-        // dirents block (metaBase) is the third metadata block, so metaBase = dataBlocks + 61 + 2. Ndblock is
-        // the end of the metadata region = metaBase + metadataContentBlocks.
-        const long MetadataReserveBlocks = 61;
-        long metaBaseBlock = dataBlocks + MetadataReserveBlocks + 2;
-        long metaBase = metaBaseBlock * BlockSize;
-        ndblock = metaBaseBlock + metadataContentBlocks;
+        // Metadata plaintext begins with [superblock][inode table], then the content tables below.
+        // MkPFS/Publishing Tools stored mode does not append LibProspero's historical trailing empty block.
+        int metadataContentBlocks = 1 /*super-root dirents*/ + 3 /*flt/apr/afid*/ + dirsPreOrder.Count /*dir dirents*/
+            + (_compress ? 1 : 0) /*legacy trailing block on the normal compressed path*/;
+
+        long metadataStartBlock;
+        if (_compress)
+        {
+            // Preserve Packizard's established normal-profile geometry.
+            const long MetadataReserveBlocks = 61;
+            metadataStartBlock = dataBlocks + MetadataReserveBlocks;
+        }
+        else
+        {
+            // Publishing Tools / MkPFS stored-mode rule:
+            // MetadataBase = (ceil(DataEnd / 256 KiB) + 15) * 256 KiB.
+            const long UBlock = 0x40000;
+            metadataStartBlock = checked(((dataEndLogical + UBlock - 1) / UBlock + 15) * (UBlock / BlockSize));
+        }
+
+        // Nodes below point at metadata content after the superblock + inode table.
+        long metaBaseBlock = checked(metadataStartBlock + 2);
+        long metaBase = checked(metaBaseBlock * BlockSize);
+        ndblock = checked(metaBaseBlock + metadataContentBlocks);
 
         long b = metaBase;
         var nodes = new List<ProsperoPs5MetaNode>();
@@ -767,7 +781,8 @@ public sealed class ProsperoPs5InnerImageAssembler
         };
         foreach (var d in dirsPreOrder)
             blocks.Add(DirentBytes(d.Dirents));
-        blocks.Add(Array.Empty<byte>());
+        if (_compress)
+            blocks.Add(Array.Empty<byte>());
 
         var meta = new ProsperoPs5InnerMetadata(_timeSec, _timeNsec);
         return meta.Build(nodes, ndblock, blocks);

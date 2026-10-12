@@ -117,7 +117,7 @@ class StandardPkgProfileTests(unittest.TestCase):
 
         self.assertIn("bool compress = true", override)
         self.assertIn("private readonly bool _compress;", override)
-        self.assertIn("if (!_compress", override)
+        self.assertIn("f.StoreRaw = !_compress", override)
         self.assertIn("storeRaw: !_compress", override)
 
         # Compatibility surface consumed by Packizard's native streaming/NAPS/SI path.

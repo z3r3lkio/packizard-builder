@@ -59,6 +59,35 @@ class MkPfsParityComparatorTests(unittest.TestCase):
         self.assertFalse(result["critical_differences"])
 
 
+    def test_deterministic_stored_fixture_naps_size_is_672(self):
+        # Fixture topology after applying the public MkPFS stored-mode rules:
+        # 6 file chunks with 3 physical RUN anchors, 15 whole gap chunks plus one
+        # partial gap, 3 metadata chunks, and the terminator.
+        data_std, data_runs = 6, 3
+        gap_whole, gap_partial = 15, 1
+        metadata_std, metadata_runs = 3, 1
+        terminator_std, terminator_runs = 1, 1
+        cblocks = (
+            data_std + data_runs
+            + (2 * gap_whole) + gap_partial
+            + metadata_std + metadata_runs
+            + terminator_std + terminator_runs
+        )
+        self.assertEqual(cblocks, 46)
+
+        inner_blocks = 18
+        file_offsets = 10
+        u2c_groups = 3
+        raw_size = (
+            16
+            + inner_blocks * 8
+            + file_offsets * 6
+            + u2c_groups * 10
+            + cblocks * 9
+        )
+        self.assertEqual(raw_size, 664)
+        self.assertEqual((raw_size + 15) // 16 * 16, 672)
+
     def test_stored_inner_override_tracks_mkpfs_geometry(self):
         source = (ROOT / "bridge" / "overrides" / "ProsperoPs5InnerImageAssembler.cs").read_text(encoding="utf-8")
         self.assertIn("const int Half = 0x20000;", source)

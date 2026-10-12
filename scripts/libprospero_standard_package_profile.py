@@ -119,8 +119,8 @@ def apply_standard_package_profile(vendor_dir: str | Path) -> bool:
     )
     changed |= _replace(
         low,
-        "new LibProsperoPkg.PFS.ProsperoPs5InnerImageAssembler(fileTime, 0).BuildFromFsTree(\n                innerRoot",
-        "new LibProsperoPkg.PFS.ProsperoPs5InnerImageAssembler(fileTime, 0, compress: !props.StoreInnerImage).BuildFromFsTree(\n                innerRoot",
+        "new LibProsperoPkg.PFS.ProsperoPs5InnerImageAssembler(fileTime, 0)",
+        "new LibProsperoPkg.PFS.ProsperoPs5InnerImageAssembler(fileTime, 0, compress: !props.StoreInnerImage)",
         "inner compression selection",
     )
     changed |= _replace(high, _HIGH_ENUM_MARKER, _HIGH_ENUM_PATCHED, "parity profile enum")

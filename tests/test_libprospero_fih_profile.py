@@ -38,6 +38,19 @@ FIH_ORIGINAL_SNIPPET = """class F {
 """
 
 PKG_ORIGINAL_SNIPPET = """class P {
+    void Build() {
+            int innerContentInodes = asmResult.Nodes.Count(n => n.ParentInode >= 0);
+            int appFileCount = asmResult.Nodes.Count(
+                n => !n.IsDirectory && n.ParentInode >= 0 && n.Mode == NonSceSysFileMode);
+            capturedNwonlyFih = new ProsperoFihNwonlyFields
+            {
+                ContentVersionHi = ContentVersionHigh(ReadParamJsonInfo(sourceFolder).ContentVersion),
+                InnerContentInodes = innerContentInodes,
+                AppFileCount = appFileCount,
+                Ndblock = asmResult.Ndblock,
+            };
+    }
+
     // The PS5 Flags1 word for each entry id.
     private static uint Flags1For(uint id) => id switch
     {

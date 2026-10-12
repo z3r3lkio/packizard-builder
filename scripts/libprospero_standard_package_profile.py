@@ -31,6 +31,9 @@ _LOW_LEVEL_PROP_PATCHED = """    /// <summary>The volume timestamp written into 
     /// </summary>
     public LibProsperoPkg.ProsperoPackageImageProfile ImageProfile { get; init; } =
         LibProsperoPkg.ProsperoPackageImageProfile.Standard;
+
+    /// <summary>Optional deterministic 16-byte outer-PFS seed used by parity tests.</summary>
+    public byte[]? OuterSeed { get; init; }
 """
 
 _HIGH_ENUM_MARKER = """/// <summary>Options describing the PS5 package to build.</summary>
@@ -52,6 +55,9 @@ public sealed class ProsperoBuildOptions
 
 _HIGH_PROP_MARKER = """    public ProsperoOutputFormat OutputFormat { get; set; } = ProsperoOutputFormat.DebugImage;
 
+    /// <summary>Optional deterministic 16-byte outer-PFS seed used by parity tests.</summary>
+    public byte[]? OuterSeed { get; set; }
+
     /// <summary>Folder whose contents become the package image (must contain <c>sce_sys/</c>).</summary>
 """
 _HIGH_PROP_PATCHED = """    public ProsperoOutputFormat OutputFormat { get; set; } = ProsperoOutputFormat.DebugImage;
@@ -70,6 +76,7 @@ _BUILD_PROPS_MARKER = """            VolumeType = ProsperoVolumeTypeForMode(opti
 """
 _BUILD_PROPS_PATCHED = """            VolumeType = ProsperoVolumeTypeForMode(options.Mode),
             ImageProfile = options.ImageProfile,
+            OuterSeed = options.OuterSeed,
         };
 """
 
@@ -96,6 +103,12 @@ def apply_standard_package_profile(vendor_dir: str | Path) -> bool:
     high = vendor / HIGH_LEVEL_BUILDER
     changed = False
     changed |= _replace(low, _LOW_LEVEL_PROP_MARKER, _LOW_LEVEL_PROP_PATCHED, "parity profile property")
+    changed |= _replace(
+        low,
+        "byte[] outerSeed = System.Security.Cryptography.RandomNumberGenerator.GetBytes(16);",
+        "byte[] outerSeed = props.OuterSeed is { Length: 16 } ? (byte[])props.OuterSeed.Clone() : System.Security.Cryptography.RandomNumberGenerator.GetBytes(16);",
+        "deterministic outer seed",
+    )
     changed |= _replace(high, _HIGH_ENUM_MARKER, _HIGH_ENUM_PATCHED, "parity profile enum")
     changed |= _replace(high, _HIGH_PROP_MARKER, _HIGH_PROP_PATCHED, "parity profile option")
     changed |= _replace(high, _BUILD_PROPS_MARKER, _BUILD_PROPS_PATCHED, "parity profile propagation")

@@ -57,6 +57,9 @@ internal sealed class BuildRequest
 
     [JsonPropertyName("outer_seed_hex")]
     public string? OuterSeedHex { get; init; }
+
+    [JsonPropertyName("inner_compression")]
+    public string InnerCompression { get; init; } = "auto";
 }
 
 internal static class Program
@@ -172,6 +175,7 @@ internal static class Program
             OuterSeed = string.IsNullOrWhiteSpace(request.OuterSeedHex)
                 ? null
                 : Convert.FromHexString(request.OuterSeedHex.Trim()),
+            StoreInnerImage = request.InnerCompression.Equals("stored", StringComparison.OrdinalIgnoreCase),
         };
         if (!string.IsNullOrWhiteSpace(request.ApplicationDrmType))
             options.ApplicationDrmType = request.ApplicationDrmType.Trim();

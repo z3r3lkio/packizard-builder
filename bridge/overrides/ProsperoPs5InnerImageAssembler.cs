@@ -844,7 +844,7 @@ public sealed class ProsperoPs5InnerImageAssembler
         compressedMeta = ProsperoPs5InnerImageBuilder.CompressPayload(
             metaPlain, storeRaw: !_compress, out var metaPf);
         metaBlocks = metaPf is null
-            ? Array.Empty<ProsperoInnerMetaBlockChunk>()
+            ? RawMetadataBlocks(metaPlain)
             : metaPf.Blocks.Select(b => new ProsperoInnerMetaBlockChunk(
                 b.CompressedSize, b.UncompressedSize, b.IsMultiChunk,
                 b.FirstChunkCompressedSize)).ToArray();
@@ -934,7 +934,7 @@ public sealed class ProsperoPs5InnerImageAssembler
         logger?.Invoke($"Inner image metadata encoded: {metaPlain.Length / 1024d:F1} KiB -> {compressedMeta.Length / 1024d:F1} KiB.");
         // Capture the per-256KiB-block chunk table so the naps generator reuses it (no second Kraken pass).
         metaBlocks = metaPf is null
-            ? Array.Empty<ProsperoInnerMetaBlockChunk>()
+            ? RawMetadataBlocks(metaPlain)
             : metaPf.Blocks.Select(b => new ProsperoInnerMetaBlockChunk(
                 b.CompressedSize, b.UncompressedSize, b.IsMultiChunk, b.FirstChunkCompressedSize)).ToList();
         pos = AlignUp(pos, BLK);
@@ -983,6 +983,25 @@ public sealed class ProsperoPs5InnerImageAssembler
         byte[] image = new ProsperoPs5InnerImageBuilder().Build(payloads);
         imageLength = image.LongLength;
         return image;
+    }
+
+    private static IReadOnlyList<ProsperoInnerMetaBlockChunk> RawMetadataBlocks(byte[] metadata)
+    {
+        if (metadata.Length == 0)
+            return Array.Empty<ProsperoInnerMetaBlockChunk>();
+
+        const int UBlock = ProsperoPs5InnerImageBuilder.CompressBlockSize;
+        var blocks = new List<ProsperoInnerMetaBlockChunk>((metadata.Length + UBlock - 1) / UBlock);
+        for (int offset = 0; offset < metadata.Length; offset += UBlock)
+        {
+            int length = Math.Min(UBlock, metadata.Length - offset);
+            blocks.Add(new ProsperoInnerMetaBlockChunk(
+                CompressedSize: length,
+                UncompressedSize: length,
+                IsMultiChunk: false,
+                FirstChunkCompressedSize: length));
+        }
+        return blocks;
     }
 
     /// <summary>

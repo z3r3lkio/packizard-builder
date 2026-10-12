@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scripts.libprospero_standard_package_profile import apply_standard_package_profile
+
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -117,6 +119,55 @@ class StandardPkgProfileTests(unittest.TestCase):
         self.assertIn("private readonly bool _compress;", override)
         self.assertIn("if (!_compress || policy ==", override)
         self.assertIn("storeRaw: !_compress", override)
+
+    def test_standard_profile_is_complete_and_idempotent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            vendor = Path(temporary)
+            low = vendor / "src" / "LibProsperoPkg" / "PKG" / "ProsperoPkgBuilder.cs"
+            high = vendor / "src" / "LibProsperoPkg" / "ProsperoPackageBuilder.cs"
+            low.parent.mkdir(parents=True)
+            high.parent.mkdir(parents=True, exist_ok=True)
+
+            low.write_text(
+                """public sealed class ProsperoPkgBuildProperties
+{
+    public DateTime TimeStamp { get; init; } = DateTime.UnixEpoch;
+}
+byte[] outerSeed = System.Security.Cryptography.RandomNumberGenerator.GetBytes(16);
+var asm = new LibProsperoPkg.PFS.ProsperoPs5InnerImageAssembler(fileTime, 0);
+""",
+                encoding="utf-8",
+            )
+            high.write_text(
+                """public enum ProsperoOutputFormat
+{
+    DebugImage,
+}
+
+/// <summary>Options describing the PS5 package to build.</summary>
+public sealed class ProsperoBuildOptions
+{
+    public ProsperoOutputFormat OutputFormat { get; set; } = ProsperoOutputFormat.DebugImage;
+}
+var props = new LibProsperoPkg.PKG.ProsperoPkgBuildProperties
+{
+            VolumeType = ProsperoVolumeTypeForMode(options.Mode),
+        };
+""",
+                encoding="utf-8",
+            )
+
+            self.assertTrue(apply_standard_package_profile(vendor))
+            self.assertFalse(apply_standard_package_profile(vendor))
+
+            low_text = low.read_text(encoding="utf-8")
+            high_text = high.read_text(encoding="utf-8")
+            self.assertIn("public bool StoreInnerImage { get; init; }", low_text)
+            self.assertIn("props.OuterSeed is { Length: 16 }", low_text)
+            self.assertIn("compress: !props.StoreInnerImage", low_text)
+            self.assertIn("public enum ProsperoPackageImageProfile", high_text)
+            self.assertIn("public bool StoreInnerImage { get; set; }", high_text)
+            self.assertIn("StoreInnerImage = options.StoreInnerImage", high_text)
 
     def test_sdk_oracle_defaults_to_standard_not_nwonly(self):
         # Regression statement for the console EICV class: our normal profile must stay Standard.

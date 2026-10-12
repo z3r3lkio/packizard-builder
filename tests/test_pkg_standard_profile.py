@@ -89,6 +89,15 @@ class StandardPkgProfileTests(unittest.TestCase):
             self.assertEqual(verified.returncode, 0, verified.stdout + "\n" + verified.stderr)
             self.assertIn('"accepted":true', verified.stdout.replace(" ", "").lower())
 
+    def test_standard_profile_preserves_data_first_naps_outer_pfs_pipeline(self):
+        patcher = (ROOT / "scripts" / "libprospero_standard_package_profile.py").read_text(encoding="utf-8")
+        # Regression guard from the MkPFS.CSharp/PS5PkgTool parity investigation:
+        # Standard must not rewrite the nested image into conventional PFS+PFSC.
+        self.assertNotIn("ProsperoPfsc.PackFile", patcher)
+        self.assertNotIn("inner.pfs", patcher)
+        self.assertIn("data-first inner image + naps_pkg_layout.dat", patcher)
+        self.assertIn("SHA3 signed / AES-XTS encrypted outer PFS", patcher)
+
     def test_sdk_oracle_defaults_to_standard_not_nwonly(self):
         # Regression statement for the console EICV class: our normal profile must stay Standard.
         # The explicit Nwonly value remains available only for controlled A/B diagnostics.

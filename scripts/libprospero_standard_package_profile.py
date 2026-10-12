@@ -6,6 +6,11 @@ PKG_BUILDER = Path("src/LibProsperoPkg/PKG/ProsperoPkgBuilder.cs")
 HIGH_LEVEL_BUILDER = Path("src/LibProsperoPkg/ProsperoPackageBuilder.cs")
 INNER_ASSEMBLER = Path("src/LibProsperoPkg/PFS/ProsperoPs5InnerImageAssembler.cs")
 
+# Parity architecture: data-first inner image + naps_pkg_layout.dat
+# -> SHA3 signed / AES-XTS encrypted outer PFS -> imagedigs.dat -> CNT/FIH/SI.
+# The patcher intentionally uses small semantic tokens because the earlier
+# exact-block strategy was brittle when other Packizard profiles reflowed code.
+
 
 def _load(path: Path, label: str) -> str:
     if not path.is_file():

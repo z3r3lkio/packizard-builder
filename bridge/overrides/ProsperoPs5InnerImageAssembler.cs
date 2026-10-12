@@ -485,6 +485,106 @@ public sealed class ProsperoPs5InnerImageAssembler
         return result;
     }
 
+    private static PackizardNativeDataStreamResult BuildStoredParityDataStream(
+        List<FileNode> afidOrder, string outputPath)
+    {
+        const int Half = 0x20000;
+        const int PhysicalBlock = 0x10000;
+
+        string? directory = Path.GetDirectoryName(Path.GetFullPath(outputPath));
+        if (!string.IsNullOrEmpty(directory))
+            Directory.CreateDirectory(directory);
+
+        static long AlignUp(long value, long alignment) =>
+            checked((value + alignment - 1) & ~(alignment - 1));
+
+        var blocks = new List<PackizardInnerDataBlock>();
+        long physical = 0;
+        long logicalEnd = 0;
+        bool previousExecutable = false;
+
+        using var output = new FileStream(
+            outputPath, FileMode.Create, FileAccess.Write, FileShare.None,
+            1024 * 1024, FileOptions.SequentialScan);
+
+        void PadTo(long aligned)
+        {
+            long gap = aligned - physical;
+            if (gap < 0)
+                throw new InvalidOperationException("Stored parity DATA cursor moved backwards.");
+            Span<byte> zeros = stackalloc byte[4096];
+            while (gap > 0)
+            {
+                int take = (int)Math.Min(gap, zeros.Length);
+                output.Write(zeros[..take]);
+                gap -= take;
+            }
+            physical = aligned;
+        }
+
+        for (int fileIndex = 0; fileIndex < afidOrder.Count; fileIndex++)
+        {
+            FileNode f = afidOrder[fileIndex];
+            if (f.DataLength == 0)
+                continue;
+
+            bool executable = IsExecutableModule(f.Header);
+            long within = physical % PhysicalBlock;
+            bool alignBefore = within != 0
+                && (executable || previousExecutable || within + f.DataLength > PhysicalBlock);
+            if (alignBefore)
+                PadTo(AlignUp(physical, PhysicalBlock));
+
+            using Stream input = f.DataPath is { Length: > 0 }
+                ? File.OpenRead(f.DataPath)
+                : new MemoryStream(f.Data, writable: false);
+
+            long local = 0;
+            while (local < f.DataLength)
+            {
+                int length = checked((int)Math.Min((long)Half, f.DataLength - local));
+                byte[] raw = new byte[length];
+                input.ReadExactly(raw);
+
+                long logical = checked(f.LogicalOffset + local);
+                if (logical != logicalEnd)
+                    throw new InvalidOperationException(
+                        $"Stored parity DATA logical discontinuity: expected 0x{logicalEnd:X}, got 0x{logical:X}.");
+
+                long onDisk = physical;
+                output.Write(raw);
+                physical = checked(physical + length);
+                blocks.Add(new PackizardInnerDataBlock(
+                    LogicalOffset: logical,
+                    UncompressedSize: length,
+                    OnDiskOffset: onDisk,
+                    CompressedSize: length,
+                    IsStored: true,
+                    IsMultiChunk: false,
+                    FirstChunkCompressedSize: length,
+                    ForceRaw: true,
+                    OwnerFlag: f.Afid == 0 ? 0u : 1u,
+                    BlockIndex: blocks.Count,
+                    FirstFileIndex: fileIndex,
+                    LastFileIndex: fileIndex,
+                    ContainsFileBoundary: false));
+
+                local = checked(local + length);
+                logicalEnd = checked(logicalEnd + length);
+            }
+
+            previousExecutable = executable;
+        }
+
+        return new PackizardNativeDataStreamResult
+        {
+            EncodedPath = outputPath,
+            EncodedLength = physical,
+            LogicalLength = logicalEnd,
+            Blocks = blocks,
+        };
+    }
+
     // ---- Tree construction -------------------------------------------------------------------------
 
     private static byte[] ReadHeader(ProsperoPs5InnerFile file)

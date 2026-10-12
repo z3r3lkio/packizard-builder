@@ -55,9 +55,6 @@ public sealed class ProsperoBuildOptions
 
 _HIGH_PROP_MARKER = """    public ProsperoOutputFormat OutputFormat { get; set; } = ProsperoOutputFormat.DebugImage;
 
-    /// <summary>Optional deterministic 16-byte outer-PFS seed used by parity tests.</summary>
-    public byte[]? OuterSeed { get; set; }
-
     /// <summary>Folder whose contents become the package image (must contain <c>sce_sys/</c>).</summary>
 """
 _HIGH_PROP_PATCHED = """    public ProsperoOutputFormat OutputFormat { get; set; } = ProsperoOutputFormat.DebugImage;
@@ -67,6 +64,9 @@ _HIGH_PROP_PATCHED = """    public ProsperoOutputFormat OutputFormat { get; set;
     /// PS5PkgTool/MkPFS-compatible data-first/NAPS outer-PFS pipeline.
     /// </summary>
     public ProsperoPackageImageProfile ImageProfile { get; set; } = ProsperoPackageImageProfile.Standard;
+
+    /// <summary>Optional deterministic 16-byte outer-PFS seed used by parity tests.</summary>
+    public byte[]? OuterSeed { get; set; }
 
     /// <summary>Folder whose contents become the package image (must contain <c>sce_sys/</c>).</summary>
 """

@@ -35,9 +35,16 @@ _FIH_LARGE_HEADER_PATCHED = """            nwonlyContentVersionHi: nwonlyContent
 _PACKAGE_FINALIZER_ORIGINAL = """            nwonlyContentVersionHi: nwonlyFih?.ContentVersionHi ?? 0,\n            nwonlyInnerContentInodes: nwonlyFih?.InnerContentInodes ?? 0,\n            nwonlyAppFileCount: nwonlyFih?.AppFileCount ?? 0,\n            siArchivePathFactory: siPathFactory);\n"""
 _PACKAGE_FINALIZER_PATCHED = """            nwonlyContentVersionHi: nwonlyFih?.ContentVersionHi ?? 0,\n            nwonlyInnerContentInodes: nwonlyFih?.InnerContentInodes ?? 0,\n            nwonlyAppFileCount: nwonlyFih?.AppFileCount ?? 0,\n            nwonlyNdblock: nwonlyFih?.Ndblock ?? 0,\n            siArchivePathFactory: siPathFactory);\n"""
 
-_NWONLY_ACCOUNTING_ORIGINAL = """            int innerContentInodes = asmResult.Nodes.Count(n => n.ParentInode >= 0);\n            int appFileCount = asmResult.Nodes.Count(\n                n => !n.IsDirectory && n.ParentInode >= 0 && n.Mode == NonSceSysFileMode);\n            capturedNwonlyFih = new ProsperoFihNwonlyFields\n            {\n                ContentVersionHi = ContentVersionHigh(ReadParamJsonInfo(sourceFolder).ContentVersion),\n                InnerContentInodes = innerContentInodes,\n                AppFileCount = appFileCount,\n                Ndblock = asmResult.Ndblock,\n            };\n"""
+_NWONLY_INODE_ORIGINAL = "            int innerContentInodes = asmResult.Nodes.Count(n => n.ParentInode >= 0);\n"
+_NWONLY_INODE_PATCHED = """            // Publishing Tools / MkPFS: FIH 0x98 is inner files + two pseudo-files.
+            // Empty-file adjustment for 0x94 is handled separately by the FIH writer.
+            int innerContentInodes = checked(asmResult.Placements.Count + 2);
+"""
 
-_NWONLY_ACCOUNTING_PATCHED = """            // Publishing Tools / MkPFS FIH accounting: 0x98 is inner files + 2 pseudo-files;\n            // 0x94 subtracts empty files (none in the deterministic parity fixture).  The existing\n            // FIH profile mirrors 0x94/0x98, so use files+2 here and keep empty-file support separate.\n            int innerContentInodes = checked(asmResult.Placements.Count + 2);\n            int appFileCount = asmResult.Nodes.Count(\n                n => !n.IsDirectory && n.ParentInode >= 0 && n.Mode == NonSceSysFileMode);\n            long innerPhysicalBlocks = checked((asmResult.ImageLength + BlockSize - 1) / BlockSize);\n            capturedNwonlyFih = new ProsperoFihNwonlyFields\n            {\n                ContentVersionHi = ContentVersionHigh(ReadParamJsonInfo(sourceFolder).ContentVersion),\n                InnerContentInodes = innerContentInodes,\n                AppFileCount = appFileCount,\n                // The FIH 0x90/0xA0 fields are physical pfs_image.dat blocks in the MkPFS oracle.\n                Ndblock = innerPhysicalBlocks,\n            };\n"""
+_NWONLY_PHYSICAL_BLOCKS_ORIGINAL = "                Ndblock = asmResult.Ndblock,\n"
+_NWONLY_PHYSICAL_BLOCKS_PATCHED = """                // FIH 0x90/0xA0 use block-aligned physical pfs_image.dat blocks.
+                Ndblock = checked((asmResult.ImageLength + BlockSize - 1) / BlockSize),
+"""
 
 _CNT_FLAGS_ORIGINAL = """    // The PS5 Flags1 word for each entry id.\n    private static uint Flags1For(uint id) => id switch\n    {\n        (uint)ProsperoCntEntryId.DIGESTS => 0x40000000,\n        (uint)ProsperoCntEntryId.ENTRY_KEYS => 0x60000000,\n        (uint)ProsperoCntEntryId.IMAGE_KEY => 0x60000000,        // image key is not entry-encrypted.\n        (uint)ProsperoCntEntryId.GENERAL_DIGESTS => 0x60000000,\n        (uint)ProsperoCntEntryId.METAS => 0x60000000,\n        (uint)ProsperoCntEntryId.ENTRY_NAMES => 0x40000000,\n        0x2000 => 0x00000000,                          // param.json\n        _ => 0x08000000,                               // media / data entries\n    };\n\n    // No CNT entries in this package class are entry-encrypted, so Flags2 is always zero.\n    private static uint Flags2For(uint id) => 0u;\n"""
 
@@ -110,7 +117,8 @@ def apply_fih_reference_profile(vendor_dir: str | Path) -> bool:
 
     changed |= _patch_exact(vendor / PKG_BUILDER_RELATIVE, _CNT_FLAGS_ORIGINAL, _CNT_FLAGS_PATCHED, "CNT package builder")
     changed |= _patch_if_present(vendor / PACKAGE_BUILDER_RELATIVE, _PACKAGE_FINALIZER_ORIGINAL, _PACKAGE_FINALIZER_PATCHED, "package finalizer Ndblock threading", strict=True)
-    changed |= _patch_if_present(vendor / PKG_BUILDER_RELATIVE, _NWONLY_ACCOUNTING_ORIGINAL, _NWONLY_ACCOUNTING_PATCHED, "MkPFS FIH inner accounting", strict=True)
+    changed |= _patch_if_present(vendor / PKG_BUILDER_RELATIVE, _NWONLY_INODE_ORIGINAL, _NWONLY_INODE_PATCHED, "MkPFS FIH inode accounting", strict=True)
+    changed |= _patch_if_present(vendor / PKG_BUILDER_RELATIVE, _NWONLY_PHYSICAL_BLOCKS_ORIGINAL, _NWONLY_PHYSICAL_BLOCKS_PATCHED, "MkPFS FIH physical inner blocks", strict=True)
 
     changed |= _patch_exact(outer, _OUTER_ENCRYPT_ORIGINAL, _OUTER_ENCRYPT_PATCHED, "outer PFS package builder")
     changed |= _patch_if_present(outer, _OUTER_STREAM_ENCRYPT_ORIGINAL, _OUTER_STREAM_ENCRYPT_PATCHED, "outer PFS streaming builder")

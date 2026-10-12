@@ -108,6 +108,10 @@ class StandardPkgProfileTests(unittest.TestCase):
         self.assertNotIn("stored file payload selection", patcher)
         self.assertIn("ASSEMBLER_OVERRIDE", prepare)
         self.assertIn("shutil.copy2(ASSEMBLER_OVERRIDE, assembler_target)", prepare)
+        self.assertLess(
+            prepare.index("shutil.copy2(ASSEMBLER_OVERRIDE, assembler_target)"),
+            prepare.index("apply_fih_reference_profile(VENDOR_DIR)"),
+        )
 
         self.assertIn("bool compress = true", override)
         self.assertIn("private readonly bool _compress;", override)

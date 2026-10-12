@@ -16,6 +16,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.IO;
+using LibProsperoPkg.PFS.Compression;
 
 namespace LibProsperoPkg.PFS;
 
@@ -857,21 +858,49 @@ public sealed class ProsperoPs5InnerImageAssembler
             Data = blockInfo, StoreRaw = true, BlockAligned = true,
         });
 
-        compressedMeta = ProsperoPs5InnerImageBuilder.CompressPayload(
-            metaPlain, storeRaw: !_compress, out var metaPf);
-        metaBlocks = metaPf is null
-            ? RawMetadataBlocks(metaPlain)
-            : metaPf.Blocks.Select(b => new ProsperoInnerMetaBlockChunk(
-                b.CompressedSize, b.UncompressedSize, b.IsMultiChunk,
-                b.FirstChunkCompressedSize)).ToArray();
-
-        metadataOnDisk = AlignUp(blockInfoOnDisk + blockInfo.LongLength, BLK);
-        payloads.Add(new ProsperoPs5InnerPayload
+        if (_compress)
         {
-            Data = compressedMeta, StoreRaw = true, BlockAligned = true,
-        });
+            compressedMeta = ProsperoPs5InnerImageBuilder.CompressPayload(
+                metaPlain, storeRaw: false, out var metaPf);
+            metaBlocks = metaPf is null
+                ? RawMetadataBlocks(metaPlain)
+                : metaPf.Blocks.Select(b => new ProsperoInnerMetaBlockChunk(
+                    b.CompressedSize, b.UncompressedSize, b.IsMultiChunk,
+                    b.FirstChunkCompressedSize)).ToArray();
 
-        imageLength = checked(metadataOnDisk + compressedMeta.LongLength);
+            metadataOnDisk = AlignUp(blockInfoOnDisk + blockInfo.LongLength, BLK);
+            payloads.Add(new ProsperoPs5InnerPayload
+            {
+                Data = compressedMeta, StoreRaw = true, BlockAligned = true,
+            });
+            imageLength = checked(metadataOnDisk + compressedMeta.LongLength);
+        }
+        else
+        {
+            // Publishing Tools / MkPFS stored mode places the metadata payload behind a PFSv3
+            // PFSC container header.  The header is not part of the logical mount and NAPS starts
+            // at the first raw metadata byte, so keep MetadataOnDiskOffset after the header.
+            byte[] storedContainer = ProsperoCompressedPfsFileWriter.WriteStored(
+                metaPlain, level: 7, blockSize: 0x40000);
+            ProsperoCompressedPfsFile storedFile = ProsperoCompressedPfsFile.Parse(storedContainer);
+            int headerLength = checked((int)storedFile.DataOffset);
+            byte[] metadataHeader = storedContainer.AsSpan(0, headerLength).ToArray();
+
+            compressedMeta = metaPlain;
+            metaBlocks = RawMetadataBlocks(metaPlain);
+
+            long headerOnDisk = AlignUp(blockInfoOnDisk + blockInfo.LongLength, BLK);
+            metadataOnDisk = checked(headerOnDisk + headerLength);
+            payloads.Add(new ProsperoPs5InnerPayload
+            {
+                Data = metadataHeader, StoreRaw = true, BlockAligned = true,
+            });
+            payloads.Add(new ProsperoPs5InnerPayload
+            {
+                Data = metaPlain, StoreRaw = true, BlockAligned = false,
+            });
+            imageLength = checked(metadataOnDisk + metaPlain.LongLength);
+        }
         string builtPath = temps.Create();
         long written = new ProsperoPs5InnerImageBuilder().BuildToFile(payloads, builtPath);
         if (written != imageLength)
@@ -945,24 +974,52 @@ public sealed class ProsperoPs5InnerImageAssembler
         pos += blockInfo.Length;
         payloads.Add(new ProsperoPs5InnerPayload { Data = blockInfo, StoreRaw = true, BlockAligned = true });
 
-        logger?.Invoke($"Inner image metadata: Kraken-encoding {metaPlain.Length / 1024d:F1} KiB metadata region...");
-        compressedMeta = ProsperoPs5InnerImageBuilder.CompressPayload(metaPlain, storeRaw: !_compress, out var metaPf);
-        logger?.Invoke($"Inner image metadata encoded: {metaPlain.Length / 1024d:F1} KiB -> {compressedMeta.Length / 1024d:F1} KiB.");
-        // Capture the per-256KiB-block chunk table so the naps generator reuses it (no second Kraken pass).
-        metaBlocks = metaPf is null
-            ? RawMetadataBlocks(metaPlain)
-            : metaPf.Blocks.Select(b => new ProsperoInnerMetaBlockChunk(
-                b.CompressedSize, b.UncompressedSize, b.IsMultiChunk, b.FirstChunkCompressedSize)).ToList();
-        pos = AlignUp(pos, BLK);
-        metadataOnDisk = pos;
-        payloads.Add(new ProsperoPs5InnerPayload
+        logger?.Invoke($"Inner image metadata: {(_compress ? "Kraken-encoding" : "storing")} {metaPlain.Length / 1024d:F1} KiB metadata region...");
+        if (_compress)
         {
-            Data = compressedMeta,
-            StoreRaw = true,
-            BlockAligned = true,
-        });
+            compressedMeta = ProsperoPs5InnerImageBuilder.CompressPayload(metaPlain, storeRaw: false, out var metaPf);
+            metaBlocks = metaPf is null
+                ? RawMetadataBlocks(metaPlain)
+                : metaPf.Blocks.Select(b => new ProsperoInnerMetaBlockChunk(
+                    b.CompressedSize, b.UncompressedSize, b.IsMultiChunk, b.FirstChunkCompressedSize)).ToList();
+            pos = AlignUp(pos, BLK);
+            metadataOnDisk = pos;
+            payloads.Add(new ProsperoPs5InnerPayload
+            {
+                Data = compressedMeta,
+                StoreRaw = true,
+                BlockAligned = true,
+            });
+            imageLength = checked(metadataOnDisk + compressedMeta.LongLength);
+        }
+        else
+        {
+            byte[] storedContainer = ProsperoCompressedPfsFileWriter.WriteStored(
+                metaPlain, level: 7, blockSize: 0x40000);
+            ProsperoCompressedPfsFile storedFile = ProsperoCompressedPfsFile.Parse(storedContainer);
+            int headerLength = checked((int)storedFile.DataOffset);
+            byte[] metadataHeader = storedContainer.AsSpan(0, headerLength).ToArray();
 
-        imageLength = checked(metadataOnDisk + compressedMeta.LongLength);
+            compressedMeta = metaPlain;
+            metaBlocks = RawMetadataBlocks(metaPlain);
+            pos = AlignUp(pos, BLK);
+            long headerOnDisk = pos;
+            payloads.Add(new ProsperoPs5InnerPayload
+            {
+                Data = metadataHeader,
+                StoreRaw = true,
+                BlockAligned = true,
+            });
+            metadataOnDisk = checked(headerOnDisk + headerLength);
+            payloads.Add(new ProsperoPs5InnerPayload
+            {
+                Data = metaPlain,
+                StoreRaw = true,
+                BlockAligned = false,
+            });
+            imageLength = checked(metadataOnDisk + metaPlain.LongLength);
+        }
+        logger?.Invoke($"Inner image metadata encoded: {metaPlain.Length / 1024d:F1} KiB -> physical tail {(imageLength - metadataOnDisk) / 1024d:F1} KiB.");
 
         // File-backed inputs stay on disk even when small. Explicit memory inputs keep
         // the existing small-image path, capped well below the CLR single-array limit.

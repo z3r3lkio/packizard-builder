@@ -118,7 +118,9 @@ class StandardPkgProfileTests(unittest.TestCase):
         self.assertIn("bool compress = true", override)
         self.assertIn("private readonly bool _compress;", override)
         self.assertIn("f.StoreRaw = !_compress", override)
-        self.assertIn("storeRaw: !_compress", override)
+        self.assertIn("BuildStoredParityDataStream", override)
+        self.assertIn("ProsperoCompressedPfsFileWriter.WriteStored", override)
+        self.assertIn("storedFile.DataOffset", override)
 
         # Compatibility surface consumed by Packizard's native streaming/NAPS/SI path.
         self.assertIn("public string? ImageFilePath { get; init; }", override)

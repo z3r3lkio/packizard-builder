@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scripts.libprospero_standard_package_profile import apply_standard_package_profile
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -97,6 +99,71 @@ class StandardPkgProfileTests(unittest.TestCase):
         self.assertNotIn("inner.pfs", patcher)
         self.assertIn("data-first inner image + naps_pkg_layout.dat", patcher)
         self.assertIn("SHA3 signed / AES-XTS encrypted outer PFS", patcher)
+
+    def test_standard_profile_patcher_is_idempotent_on_stable_tokens(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            vendor = Path(temporary)
+            low = vendor / "src" / "LibProsperoPkg" / "PKG" / "ProsperoPkgBuilder.cs"
+            high = vendor / "src" / "LibProsperoPkg" / "ProsperoPackageBuilder.cs"
+            asm = vendor / "src" / "LibProsperoPkg" / "PFS" / "ProsperoPs5InnerImageAssembler.cs"
+            low.parent.mkdir(parents=True)
+            high.parent.mkdir(parents=True, exist_ok=True)
+            asm.parent.mkdir(parents=True)
+
+            low.write_text(
+                """public sealed class ProsperoPkgBuildProperties
+{
+    /// <summary>The volume timestamp written into the PFS inode table.</summary>
+    public DateTime TimeStamp { get; init; } = DateTime.UnixEpoch;
+}
+byte[] outerSeed = System.Security.Cryptography.RandomNumberGenerator.GetBytes(16);
+var x = new LibProsperoPkg.PFS.ProsperoPs5InnerImageAssembler(fileTime, 0).BuildFromFsTree(innerRoot);
+""",
+                encoding="utf-8",
+            )
+            high.write_text(
+                """/// <summary>Options describing the PS5 package to build.</summary>
+public sealed class ProsperoBuildOptions
+{
+    public ProsperoOutputFormat OutputFormat { get; set; } = ProsperoOutputFormat.DebugImage;
+}
+var buildProps = new LibProsperoPkg.PKG.ProsperoPkgBuildProperties
+{
+            VolumeType = ProsperoVolumeTypeForMode(options.Mode),
+        };
+""",
+                encoding="utf-8",
+            )
+            asm.write_text(
+                """public sealed class ProsperoPs5InnerImageAssembler
+{
+    private readonly uint _timeNsec;
+    public ProsperoPs5InnerImageAssembler(long buildTimeSec, uint buildTimeNsec)
+    {
+        _timeSec = buildTimeSec;
+        _timeNsec = buildTimeNsec;
+    }
+    void Build()
+    {
+            if (policy == ProsperoInnerFilePolicy.StoreVerbatim
+                || policy == ProsperoInnerFilePolicy.RequiresModuleConversion)
+            {
+            }
+        compressedMeta = ProsperoPs5InnerImageBuilder.CompressPayload(metaPlain, storeRaw: false, out var metaPf);
+    }
+}
+""",
+                encoding="utf-8",
+            )
+
+            self.assertTrue(apply_standard_package_profile(vendor))
+            self.assertFalse(apply_standard_package_profile(vendor))
+
+            self.assertIn("compress: !props.StoreInnerImage", low.read_text(encoding="utf-8"))
+            self.assertIn("StoreInnerImage = options.StoreInnerImage", high.read_text(encoding="utf-8"))
+            patched_asm = asm.read_text(encoding="utf-8")
+            self.assertIn("if (!_compress || policy ==", patched_asm)
+            self.assertIn("storeRaw: !_compress", patched_asm)
 
     def test_sdk_oracle_defaults_to_standard_not_nwonly(self):
         # Regression statement for the console EICV class: our normal profile must stay Standard.

@@ -180,9 +180,9 @@ class LibProsperoFihProfileTests(unittest.TestCase):
             self.assertIn("ProsperoCntEntryId.LICENSE_DAT => 0x80000000", pkg)
             self.assertIn("ProsperoCntEntryId.LICENSE_INFO => 0x00004000", pkg)
 
-            self.assertNotIn("Encrypt(build, tweak, data);", outer)
-            self.assertNotIn("xts.CryptSector(block, sector, encrypt: true);", outer)
-            self.assertIn("FullDebug references store", outer)
+            self.assertIn("Encrypt(build, tweak, data);", outer)
+            self.assertIn("xts.CryptSector(block, sector, encrypt: true);", outer)
+            self.assertNotIn("FullDebug references store", outer)
 
             self.assertIn("FileNode? keystone", assembler)
             self.assertIn("afidOrder.Add(keystone)", assembler)

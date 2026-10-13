@@ -276,11 +276,15 @@ public static class ProsperoPkgBuilder
             byte[] nwonlyNaps = PackizardNativeNapsEngine.Generate(asmResult);
             log($"NAPS layout generated: {nwonlyNaps.Length:N0} bytes; calculating PlayGo/FIH metadata.");
 
-            // PlayGo file/inode count drives playgo-ficm.dat (count) and playgo-hash-table.dat (count / 2),
-            // self-consistent. It counts ALL inner FILE inodes — the internal flat-path/afid tables PLUS the
-            // regular files (inode_flat_path_table + apr_flat_path_table + afid_to_ino_table + keystone
-            // + right.sprx + eboot → ficm 0x16, hash-table 0x50).
-            uint playgoFileCount = (uint)asmResult.Nodes.Count(n => !n.IsDirectory);
+            // Publishing Tools / MkPFS PlayGo accounting is driven by the actual inner files,
+            // excluding the three internal metadata-table inodes. The FICM count is two entries per
+            // inner file, while the hash table contains one path hash per inner file.
+            string[] playgoInnerPaths = asmResult.Nodes
+                .Where(n => !n.IsDirectory && n.ParentInode >= 0)
+                .OrderBy(n => n.Afid)
+                .Select(n => n.FullPath.TrimStart('/'))
+                .ToArray();
+            uint playgoFileCount = checked((uint)(2 * playgoInnerPaths.Length));
 
             // FIH nested-image accounting:
             //   0xA8 = length of naps_pkg_layout.dat.
@@ -378,7 +382,9 @@ public static class ProsperoPkgBuilder
                 ? innerImageAlignedSize
                 : mchunkTotal - BlockSize;
             long mchunk1 = mchunkTotal - mchunk0;
-            var pkg = BuildContainer(props, ekpfs, sourceFolder, (ulong)pfsSize, imagedigsSize, playgoFileCount, (ulong)mchunk0, (ulong)mchunk1);
+            var pkg = BuildContainer(
+                props, ekpfs, sourceFolder, (ulong)pfsSize, imagedigsSize,
+                playgoFileCount, playgoInnerPaths, (ulong)mchunk0, (ulong)mchunk1);
             var imagedigsEntry = (ProsperoCntGenericEntry)pkg.Entries.First(e => (uint)e.Id == ImagedigsEntryId);
 
             long totalSize = (long)(pkg.Header.body_offset + pkg.Header.body_size + pkg.Header.pfs_image_size);
@@ -563,7 +569,8 @@ public static class ProsperoPkgBuilder
 
     private static ProsperoCnt BuildContainer(
         ProsperoPkgBuildProperties props, byte[] ekpfs, string sourceFolder,
-        ulong pfsSize, int imagedigsSize, uint playgoFileCount, ulong mchunk0Size, ulong mchunk1Size)
+        ulong pfsSize, int imagedigsSize, uint playgoFileCount, IReadOnlyList<string> playgoInnerPaths,
+        ulong mchunk0Size, ulong mchunk1Size)
     {
         uint contentType = ContentTypeFor(props.VolumeType);
         var pkg = new ProsperoCnt
@@ -686,7 +693,7 @@ public static class ProsperoPkgBuilder
         // playgo-hash-table.dat + playgo-ficm.dat come AFTER the media entries.
         AddDescriptorEntries(
         [
-            (0x2010u, "playgo-hash-table.dat", LibProsperoPkg.PlayGo.ProsperoPlayGo.BuildHashTable(playgoFileCount / 2)),
+            (0x2010u, "playgo-hash-table.dat", LibProsperoPkg.PlayGo.ProsperoPlayGo.BuildHashTable(playgoInnerPaths)),
             (0x2011u, "playgo-ficm.dat", LibProsperoPkg.PlayGo.ProsperoPlayGo.BuildFicm(playgoFileCount)),
         ]);
 

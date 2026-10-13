@@ -11,9 +11,12 @@
 
 #nullable enable
 using LibProsperoPkg.Util;
+using LibProsperoPkg.PFS;
 using System;
 using System.Buffers.Binary;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Text;
 
@@ -226,53 +229,40 @@ public static class ProsperoPlayGo
     /// (the per-chunk constant table follows at this offset).</summary>
     public const int HashTableTableOffset = 0x38;
 
-    // The playgo-hash-table.dat payload is content-INDEPENDENT: the 16-byte prefix and every
-    // 8-byte per-chunk table entry are fixed table constants,
-    // not a hash of this package's content. The first five entries below cover the whole observed
-    // debug profile (chunk counts 4 and 5); higher counts are extremely unusual for the
-    // single-chunk system-application packages this path targets, and can be extended if ever
-    // required.
-    private static ReadOnlySpan<byte> HashTablePrefix =>
-        [0x51, 0x4F, 0xA2, 0x26, 0xAB, 0x8A, 0xCA, 0x92, 0x4D, 0xC4, 0x1B, 0xA4, 0x61, 0xB7, 0xBB, 0x09];
-
-    private static readonly byte[][] HashTableEntries =
-    [
-        [0x8E, 0x54, 0xCB, 0x4D, 0x4A, 0xF6, 0x30, 0x0E],
-        [0xF2, 0xBF, 0xF6, 0x27, 0xB9, 0x8F, 0x88, 0x53],
-        [0xCB, 0xDC, 0xC6, 0x3E, 0xEC, 0xB3, 0xC4, 0xAE],
-        [0x0B, 0xF4, 0xE9, 0xC5, 0xDA, 0xF8, 0xC9, 0xAE],
-        [0x4C, 0xF7, 0x0C, 0x08, 0x17, 0x4D, 0xCB, 0xD3],
-    ];
-
     /// <summary>
-    /// Builds the PS5 <c>sce_sys/playgo-hash-table.dat</c> (CNT entry id <c>0x2010</c>). The file is a
-    /// 0x28-byte header, a 16-byte constant prefix, then a <paramref name="chunkCount"/>-entry constant
-    /// table (8 bytes each), so its total length is <c>0x38 + chunkCount * 8</c>. The number of
-    /// hash-table chunks is half the PlayGo file/inode count stamped in <c>playgo-ficm.dat</c>
-    /// (ficm 8 -&gt; 4 chunks, ficm 10 -&gt; 5 chunks).
+    /// Builds <c>playgo-hash-table.dat</c> from the inner file paths. Each table entry is the same
+    /// path hash used by the PS5 flat-path table, sorted ascending; the 16-byte prefix stores the
+    /// two format seeds.
     /// </summary>
-    /// <param name="chunkCount">The hash-table chunk count (= <c>ficmFileCount / 2</c>).</param>
-    public static byte[] BuildHashTable(uint chunkCount)
+    /// <param name="innerPaths">Inner file paths relative to the user root.</param>
+    public static byte[] BuildHashTable(IReadOnlyList<string> innerPaths)
     {
-        if (chunkCount > 0x10000)
-            throw new ArgumentOutOfRangeException(nameof(chunkCount), chunkCount, "PlayGo hash-table chunk count is implausibly large.");
-        int tableSize = (int)chunkCount * HashTableEntrySize;
+        ArgumentNullException.ThrowIfNull(innerPaths);
+        ulong[] hashes = innerPaths
+            .Select(path =>
+            {
+                string normalized = path.Replace('\\', '/');
+                if (!normalized.StartsWith("/", StringComparison.Ordinal))
+                    normalized = "/" + normalized;
+                return ProsperoPs5FlatPathTable.HashPath(normalized);
+            })
+            .Order()
+            .ToArray();
+
+        int tableSize = checked(hashes.Length * HashTableEntrySize);
         byte[] d = new byte[HashTableTableOffset + tableSize];
         var s = d.AsSpan();
-        BinaryPrimitives.WriteUInt32LittleEndian(s[0x00..], 1);                          // version
-        BinaryPrimitives.WriteUInt32LittleEndian(s[0x04..], 0x08000000);                 // const flags
-        BinaryPrimitives.WriteUInt32LittleEndian(s[0x08..], HashTableTableOffset);       // table offset
-        BinaryPrimitives.WriteUInt32LittleEndian(s[0x0C..], (uint)tableSize);            // table size
-        new byte[] { 0x7F, (byte)'F', (byte)'L', (byte)'T' }.CopyTo(s[0x18..]);          // "\x7FFLT" magic
-        BinaryPrimitives.WriteUInt32LittleEndian(s[0x24..], chunkCount);                 // chunk count
-        HashTablePrefix.CopyTo(s[0x28..]);                                               // 16-byte const prefix
-        for (int i = 0; i < chunkCount; i++)
-        {
-            // These constants cover chunk indices 0..4; for the rare higher counts repeat the last
-            // known constant (deterministic, self-consistent).
-            byte[] entry = HashTableEntries[Math.Min(i, HashTableEntries.Length - 1)];
-            entry.CopyTo(s[(HashTableTableOffset + i * HashTableEntrySize)..]);
-        }
+        BinaryPrimitives.WriteUInt32LittleEndian(s[0x00..], 1);
+        BinaryPrimitives.WriteUInt32LittleEndian(s[0x04..], 0x08000000);
+        BinaryPrimitives.WriteUInt32LittleEndian(s[0x08..], HashTableTableOffset);
+        BinaryPrimitives.WriteUInt32LittleEndian(s[0x0C..], (uint)tableSize);
+        new byte[] { 0x7F, (byte)'F', (byte)'L', (byte)'T' }.CopyTo(s[0x18..]);
+        BinaryPrimitives.WriteUInt32LittleEndian(s[0x24..], checked((uint)hashes.Length));
+        BinaryPrimitives.WriteUInt64LittleEndian(s[0x28..], ProsperoPs5FlatPathTable.Seed0);
+        BinaryPrimitives.WriteUInt64LittleEndian(s[0x30..], ProsperoPs5FlatPathTable.Seed1);
+        for (int i = 0; i < hashes.Length; i++)
+            BinaryPrimitives.WriteUInt64LittleEndian(
+                s[(HashTableTableOffset + i * HashTableEntrySize)..], hashes[i]);
         return d;
     }
 

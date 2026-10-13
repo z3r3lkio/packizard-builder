@@ -31,3 +31,14 @@ Packizard does not bundle or launch the standalone PPR-PKG Builder GUI. The curr
 ## Acknowledgements
 
 Packizard acknowledges Nazky, Deckerr97, Pippo, drakmor, SvenGDK and other public PS5 tooling contributors whose research informed earlier and current workflows. These acknowledgements do not imply that Packizard's current build depends on another application repository.
+
+
+## MkPFS.CSharp
+
+Packizard uses **MkPFS.CSharp** as a public FPKG behavioral/structural parity oracle.
+
+- upstream repository: https://github.com/danthespal/MkPFS.CSharp
+- pinned oracle commit: `dfca7367897a38f9ad425172f6f4f3f84b40d0c4`
+- license: GPL-3.0-only
+
+No MkPFS.CSharp source is vendored by this parity track. The oracle is used to validate observable package geometry and metadata behavior, including its documented PS5PkgTool parity tests.

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QUrl, Qt
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -20,15 +21,13 @@ from PySide6.QtWidgets import (
 
 from core.param_parser import parse_game_info
 from core.pkg_engine import (
-    ENGINE_NAME,
     ENGINE_VERSION,
-    PPR_GUI_REFERENCE_VERSION,
     PkgBuildOptions,
     PkgEngineError,
     probe_pkg_engine,
 )
 from gui.widgets import AnimatedButton, CenteredComboBox, SectionCard, StatusBadge
-from utils.pkg_worker import PkgBuildWorker
+from utils.pkg_worker import PkgBuildWorker, PkgExtractWorker, PkgVerifyWorker
 
 
 PACKAGE_MODES = ("Application", "Homebrew", "AdditionalContentData", "AdditionalContentNoData")
@@ -54,18 +53,20 @@ def _pkg_version(value: str) -> str:
 
 
 class PkgPage(QWidget):
-    """Integrated LibProsperoPKG builder UI.
-
-    This page intentionally does not launch another GUI. Packizard talks to its bundled
-    Packizard.PkgBridge helper, which links against the pinned upstream LibProsperoPKG release.
-    """
+    """Packizard's integrated PKG build, verify and extraction UI."""
 
     def __init__(self, state, parent=None):
         super().__init__(parent)
         self.state = state
         self.source_path: Path | None = None
         self.output_dir: Path | None = None
+        self.existing_pkg_path: Path | None = None
+        self.extract_dir: Path | None = None
+        self.last_result_dir: Path | None = None
         self.worker: PkgBuildWorker | None = None
+        self.tool_worker: PkgVerifyWorker | PkgExtractWorker | None = None
+        self.engine_available = False
+        self.keys_available = False
         self._init_ui()
         self.refresh_engine_status()
 
@@ -88,7 +89,7 @@ class PkgPage(QWidget):
         title = QLabel("Build PKG")
         title.setObjectName("Header")
         subtitle = QLabel(
-            "Construye el PKG dentro de Packizard con el motor LibProsperoPKG integrado. "
+            "Construye, verifica y extrae paquetes directamente dentro de Packizard. "
             "No se abre ninguna aplicación externa."
         )
         subtitle.setObjectName("SubHeader")
@@ -96,13 +97,13 @@ class PkgPage(QWidget):
         text.addWidget(title)
         text.addWidget(subtitle)
         header.addLayout(text, 1)
-        self.engine_badge = StatusBadge(f"{ENGINE_NAME} v{ENGINE_VERSION}", icon="package")
+        self.engine_badge = StatusBadge(f"Packizard PKG Engine v{ENGINE_VERSION}", icon="package")
         header.addWidget(self.engine_badge, 0, Qt.AlignTop)
         layout.addLayout(header)
 
         source = SectionCard(
-            "Source",
-            "Selecciona la carpeta preparada que contiene sce_sys/. Para comprimir y empaquetar en un solo paso usa el tick de la página Compress.",
+            "Build paths",
+            "Selecciona la carpeta preparada que contiene sce_sys/ y la carpeta de salida del paquete.",
             label_width=150,
         )
         self.source_edit = QLineEdit()
@@ -119,6 +120,42 @@ class PkgPage(QWidget):
         output_btn.clicked.connect(self._browse_output)
         source.add_row("Output folder", self.output_edit, output_btn)
         layout.addWidget(source)
+
+        existing = SectionCard(
+            "Existing PKG tools",
+            "Selecciona un PKG existente para validarlo o extraerlo. La extracción usa el Passcode indicado en Package metadata.",
+            label_width=150,
+        )
+        self.existing_pkg_edit = QLineEdit()
+        self.existing_pkg_edit.setPlaceholderText("Archivo .pkg existente")
+        self.existing_pkg_edit.editingFinished.connect(self._existing_pkg_from_text)
+        existing_btn = AnimatedButton("Examinar", "secondary", icon="folder")
+        existing_btn.clicked.connect(self._browse_existing_pkg)
+        existing.add_row("PKG file", self.existing_pkg_edit, existing_btn)
+
+        self.extract_edit = QLineEdit()
+        self.extract_edit.setPlaceholderText("Carpeta de extracción")
+        self.extract_edit.editingFinished.connect(self._extract_from_text)
+        extract_dir_btn = AnimatedButton("Examinar", "secondary", icon="folder")
+        extract_dir_btn.clicked.connect(self._browse_extract_dir)
+        existing.add_row("Extraction folder", self.extract_edit, extract_dir_btn)
+
+        tool_buttons = QWidget()
+        tool_buttons_l = QHBoxLayout(tool_buttons)
+        tool_buttons_l.setContentsMargins(0, 0, 0, 0)
+        tool_buttons_l.setSpacing(8)
+        tool_buttons_l.addStretch(1)
+        self.verify_existing_btn = AnimatedButton("Verify PKG", "secondary")
+        self.verify_existing_btn.clicked.connect(self._verify_existing)
+        tool_buttons_l.addWidget(self.verify_existing_btn)
+        self.extract_existing_btn = AnimatedButton("Extract PKG", "secondary")
+        self.extract_existing_btn.clicked.connect(self._extract_existing)
+        tool_buttons_l.addWidget(self.extract_existing_btn)
+        self.open_result_btn = AnimatedButton("Open result folder", "secondary", icon="folder")
+        self.open_result_btn.clicked.connect(self._open_result_folder)
+        tool_buttons_l.addWidget(self.open_result_btn)
+        existing.add_widget(tool_buttons)
+        layout.addWidget(existing)
 
         metadata = SectionCard(
             "Package metadata",
@@ -142,7 +179,7 @@ class PkgPage(QWidget):
 
         options = SectionCard(
             "Build options",
-            f"Opciones del motor integrado. Los defaults siguen la referencia PPR-PKG Builder {PPR_GUI_REFERENCE_VERSION} cuando la API pública equivalente está disponible.",
+            "Opciones reales expuestas por el motor PKG integrado de Packizard.",
             label_width=180,
         )
         self.mode_combo = CenteredComboBox()
@@ -175,18 +212,18 @@ class PkgPage(QWidget):
 
         self.verify_cb = QCheckBox("Verify package after build")
         self.verify_cb.setChecked(True)
-        self.verify_cb.setToolTip("Run LibProsperoPKG structural acceptance validation and fail the build on errors.")
+        self.verify_cb.setToolTip("Valida formato e integridad estructural al terminar y detiene la construcción si detecta errores.")
         options.add_row("Verification", self.verify_cb)
         layout.addWidget(options)
 
         run_card = SectionCard(
-            "Build",
-            "El trabajo se ejecuta mediante el helper interno Packizard.PkgBridge y LibProsperoPKG; el log aparece aquí y puede cancelarse.",
+            "Build and log",
+            "Las operaciones se ejecutan mediante el motor PKG integrado de Packizard y pueden cancelarse.",
         )
         self.log_output = QPlainTextEdit()
         self.log_output.setReadOnly(True)
-        self.log_output.setMinimumHeight(150)
-        self.log_output.setPlaceholderText("PKG build log")
+        self.log_output.setMinimumHeight(170)
+        self.log_output.setPlaceholderText("PKG operation log")
         run_card.add_widget(self.log_output)
 
         self.progress = QProgressBar()
@@ -203,6 +240,10 @@ class PkgPage(QWidget):
         buttons = QWidget()
         buttons_l = QHBoxLayout(buttons)
         buttons_l.setContentsMargins(0, 0, 0, 0)
+        buttons_l.setSpacing(8)
+        self.clear_log_btn = AnimatedButton("Clear log", "secondary")
+        self.clear_log_btn.clicked.connect(self.log_output.clear)
+        buttons_l.addWidget(self.clear_log_btn)
         buttons_l.addStretch(1)
         self.cancel_btn = AnimatedButton("Cancel", "secondary", icon="stop")
         self.cancel_btn.setVisible(False)
@@ -217,7 +258,8 @@ class PkgPage(QWidget):
 
         self.scroll.setWidget(host)
         outer.addWidget(self.scroll)
-        self._responsive_cards = [source, metadata, options, run_card]
+        self._responsive_cards = [source, existing, metadata, options, run_card]
+        self._refresh_action_state()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -225,28 +267,39 @@ class PkgPage(QWidget):
         for card in self._responsive_cards:
             card.set_compact(compact)
 
+    def _busy(self) -> bool:
+        return self.worker is not None or self.tool_worker is not None
+
+    def _refresh_action_state(self):
+        busy = self._busy()
+        self.build_btn.setEnabled(self.engine_available and self.keys_available and not busy)
+        self.verify_existing_btn.setEnabled(self.engine_available and not busy)
+        self.extract_existing_btn.setEnabled(self.engine_available and not busy)
+        self.open_result_btn.setEnabled(self.last_result_dir is not None and not busy)
+        self.clear_log_btn.setEnabled(not busy)
+        self.cancel_btn.setVisible(busy)
+
     def refresh_engine_status(self):
         try:
             info = probe_pkg_engine()
         except PkgEngineError as exc:
             info = None
             self.status_label.setText(str(exc))
+        self.engine_available = bool(info)
+        self.keys_available = bool(info and info.keys_available)
         if info:
             keys = "keys available" if info.keys_available else "key material unavailable"
-            self.engine_badge.setText(f"{info.engine_name} v{info.engine_version} · integrated")
-            self.engine_badge.setToolTip(
-                f"{info.path}\n{keys}\nref {info.engine_ref}\nPPR-PKG Builder reference {info.ppr_gui_reference_version}"
-            )
+            self.engine_badge.setText(f"Packizard PKG Engine v{info.engine_version} · integrated")
+            self.engine_badge.setToolTip(f"Motor PKG integrado de Packizard\n{keys}")
             self.engine_badge.setProperty("warning", not bool(info.keys_available))
-            self.build_btn.setEnabled(bool(info.keys_available))
         else:
-            self.engine_badge.setText(f"{ENGINE_NAME} v{ENGINE_VERSION} · bridge missing")
+            self.engine_badge.setText(f"Packizard PKG Engine v{ENGINE_VERSION} · bridge missing")
             self.engine_badge.setProperty("warning", True)
-            self.build_btn.setEnabled(False)
-            if self.worker is None:
+            if not self._busy():
                 self.status_label.setText(
                     "Integrated PKG bridge is not present in this development/source run. Packaged releases include it."
                 )
+        self._refresh_action_state()
         self.engine_badge.style().unpolish(self.engine_badge)
         self.engine_badge.style().polish(self.engine_badge)
 
@@ -260,6 +313,16 @@ class PkgPage(QWidget):
         if folder:
             self.set_output(Path(folder))
 
+    def _browse_existing_pkg(self):
+        filename, _ = QFileDialog.getOpenFileName(self, "Seleccionar PKG", "", "PKG files (*.pkg);;All files (*)")
+        if filename:
+            self.set_existing_pkg(Path(filename))
+
+    def _browse_extract_dir(self):
+        folder = QFileDialog.getExistingDirectory(self, "Seleccionar carpeta de extracción")
+        if folder:
+            self.set_extract_dir(Path(folder))
+
     def _source_from_text(self):
         text = self.source_edit.text().strip()
         if text:
@@ -269,6 +332,14 @@ class PkgPage(QWidget):
         text = self.output_edit.text().strip()
         if text:
             self.output_dir = Path(text).expanduser()
+
+    def _existing_pkg_from_text(self):
+        text = self.existing_pkg_edit.text().strip()
+        self.existing_pkg_path = Path(text).expanduser() if text else None
+
+    def _extract_from_text(self):
+        text = self.extract_edit.text().strip()
+        self.extract_dir = Path(text).expanduser() if text else None
 
     def set_source(self, path: Path, *, warn: bool = True):
         path = Path(path).expanduser()
@@ -285,6 +356,16 @@ class PkgPage(QWidget):
     def set_output(self, path: Path):
         self.output_dir = Path(path).expanduser()
         self.output_edit.setText(str(self.output_dir))
+
+    def set_existing_pkg(self, path: Path):
+        self.existing_pkg_path = Path(path).expanduser()
+        self.existing_pkg_edit.setText(str(self.existing_pkg_path))
+        if not self.extract_dir:
+            self.set_extract_dir(self.existing_pkg_path.with_name(self.existing_pkg_path.stem + "-extracted"))
+
+    def set_extract_dir(self, path: Path):
+        self.extract_dir = Path(path).expanduser()
+        self.extract_edit.setText(str(self.extract_dir))
 
     def _refresh_metadata(self):
         if not self.source_path:
@@ -324,8 +405,14 @@ class PkgPage(QWidget):
             verify_after_build=self.verify_cb.isChecked(),
         )
 
+    def _wire_worker(self, worker):
+        worker.log_updated.connect(self.log_output.appendPlainText)
+        worker.status_updated.connect(self.status_label.setText)
+        worker.progress_updated.connect(self.progress.setValue)
+        worker.finished.connect(worker.deleteLater)
+
     def _build(self):
-        if self.worker is not None and self.worker.isRunning():
+        if self._busy():
             return
         try:
             options = self.build_options()
@@ -335,32 +422,87 @@ class PkgPage(QWidget):
             return
 
         self.log_output.clear()
+        self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.status_label.setText("Queued…")
         worker = PkgBuildWorker(options, self)
-        worker.log_updated.connect(self.log_output.appendPlainText)
-        worker.status_updated.connect(self.status_label.setText)
-        worker.progress_updated.connect(self.progress.setValue)
+        self._wire_worker(worker)
         worker.build_finished.connect(self._finished)
-        worker.finished.connect(worker.deleteLater)
         self.worker = worker
-        self.build_btn.setEnabled(False)
-        self.cancel_btn.setVisible(True)
+        self._refresh_action_state()
         worker.start()
 
+    def _selected_existing_pkg(self) -> Path | None:
+        text = self.existing_pkg_edit.text().strip()
+        if text:
+            self.existing_pkg_path = Path(text).expanduser()
+        if self.existing_pkg_path and self.existing_pkg_path.is_file():
+            return self.existing_pkg_path
+        QMessageBox.warning(self, "PKG required", "Select an existing .pkg file first.")
+        return None
+
+    def _verify_existing(self):
+        if self._busy():
+            return
+        package = self._selected_existing_pkg()
+        if package is None:
+            return
+        self.log_output.clear()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        worker = PkgVerifyWorker(str(package), parent=self)
+        self._wire_worker(worker)
+        worker.operation_finished.connect(self._tool_finished)
+        self.tool_worker = worker
+        self._refresh_action_state()
+        worker.start()
+
+    def _extract_existing(self):
+        if self._busy():
+            return
+        package = self._selected_existing_pkg()
+        if package is None:
+            return
+        output_text = self.extract_edit.text().strip()
+        if not output_text:
+            QMessageBox.warning(self, "Extraction folder required", "Select an extraction folder first.")
+            return
+        passcode = self.passcode_edit.text().strip() or ("0" * 32)
+        if len(passcode) != 32:
+            QMessageBox.warning(self, "Invalid passcode", "PKG passcode must contain exactly 32 characters.")
+            return
+        self.extract_dir = Path(output_text).expanduser()
+        self.log_output.clear()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        worker = PkgExtractWorker(str(package), str(self.extract_dir), passcode, self)
+        self._wire_worker(worker)
+        worker.operation_finished.connect(self._tool_finished)
+        self.tool_worker = worker
+        self._refresh_action_state()
+        worker.start()
+
+    def _open_result_folder(self):
+        if self.last_result_dir is None:
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.last_result_dir)))
+
     def _cancel(self):
-        if self.worker is not None and self.worker.isRunning():
-            self.worker.cancel()
+        worker = self.worker or self.tool_worker
+        if worker is not None and worker.isRunning():
+            worker.cancel()
             self.status_label.setText("Cancelling…")
 
     def _finished(self, ok: bool, output_path: str, message: str):
-        self.cancel_btn.setVisible(False)
         self.worker = None
-        self.refresh_engine_status()
         if ok:
             self.progress.setValue(100)
             self.status_label.setText(message)
             self.log_output.appendPlainText(f"Output: {output_path}")
+            if output_path:
+                built = Path(output_path)
+                self.set_existing_pkg(built)
+                self.last_result_dir = built.parent
         elif "cancel" in message.casefold():
             self.progress.setValue(0)
             self.status_label.setText("Cancelled")
@@ -368,3 +510,26 @@ class PkgPage(QWidget):
             self.status_label.setText("PKG build failed. See log for details.")
             self.log_output.appendPlainText(message)
             QMessageBox.critical(self, "PKG build failed", message.splitlines()[-1] if message else "Unknown error")
+        self.refresh_engine_status()
+
+    def _tool_finished(self, ok: bool, output_path: str, message: str):
+        worker = self.tool_worker
+        self.tool_worker = None
+        if ok:
+            self.progress.setValue(100)
+            self.status_label.setText(message)
+            if output_path:
+                result = Path(output_path)
+                self.last_result_dir = result if result.is_dir() else result.parent
+                self.log_output.appendPlainText(f"Result: {output_path}")
+        elif "cancel" in message.casefold():
+            self.progress.setValue(0)
+            self.status_label.setText("Cancelled")
+        else:
+            self.progress.setValue(0)
+            self.status_label.setText("PKG operation failed. See log for details.")
+            self.log_output.appendPlainText(message)
+            QMessageBox.critical(self, "PKG operation failed", message.splitlines()[-1] if message else "Unknown error")
+        self.refresh_engine_status()
+        if worker is not None and worker.isRunning():
+            pass

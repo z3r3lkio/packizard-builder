@@ -1,0 +1,13 @@
+{
+  "repository": "danthespal/MkPFS.CSharp",
+  "ref": "dfca7367897a38f9ad425172f6f4f3f84b40d0c4",
+  "role": "FPKG parity oracle",
+  "scope": [
+    "data-first inner image",
+    "naps_pkg_layout.dat",
+    "SHA3 signed outer PFS",
+    "AES-XTS outer encryption",
+    "CNT/FIH/SI structural parity",
+    "PS5PkgTool stored-package parity"
+  ]
+}

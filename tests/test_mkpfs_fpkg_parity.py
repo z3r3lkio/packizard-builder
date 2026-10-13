@@ -164,5 +164,21 @@ class MkPfsParityComparatorTests(unittest.TestCase):
         self.assertEqual(classified["tolerated_differences"], [])
 
 
+    def test_outer_pfs_ciphertext_is_parity_critical(self):
+        report = {
+            "reference": {},
+            "candidate": {},
+            "differences": [
+                {"field": "pfs_sha256", "reference": "aa", "candidate": "bb"},
+            ],
+        }
+        classified = classify(report)
+        self.assertFalse(classified["parity"])
+        self.assertEqual(
+            [d["field"] for d in classified["critical_differences"]],
+            ["pfs_sha256"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

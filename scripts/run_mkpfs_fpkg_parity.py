@@ -173,6 +173,7 @@ def main() -> int:
             "parity": result["parity"],
             "critical_differences": result["critical_differences"],
             "tolerated_difference_count": len(result["tolerated_differences"]),
+            "tolerated_differences": result["tolerated_differences"],
             "reference": str(reference),
             "candidate": str(candidate),
         }, indent=2, sort_keys=True))

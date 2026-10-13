@@ -40,6 +40,12 @@ CRITICAL_FIELDS = {
     "cnt_pfs_flags",
     "cnt_pfs_image_offset",
     "cnt_pfs_image_size",
+    # EICV-sensitive finalized-image digest slots. 0x30/0x70/0xD0 are the
+    # outer-superblock digest triplet; 0xB0 authenticates the nested image map.
+    "digest_0x30",
+    "digest_0x70",
+    "digest_0xb0",
+    "digest_0xd0",
 }
 
 # Entry existence, flags and size are structural. SHA-256 differences can be

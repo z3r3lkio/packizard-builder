@@ -120,8 +120,17 @@ def apply_fih_reference_profile(vendor_dir: str | Path) -> bool:
     changed |= _patch_if_present(vendor / PKG_BUILDER_RELATIVE, _NWONLY_INODE_ORIGINAL, _NWONLY_INODE_PATCHED, "MkPFS FIH inode accounting", strict=True)
     changed |= _patch_if_present(vendor / PKG_BUILDER_RELATIVE, _NWONLY_PHYSICAL_BLOCKS_ORIGINAL, _NWONLY_PHYSICAL_BLOCKS_PATCHED, "MkPFS FIH physical inner blocks", strict=True)
 
-    changed |= _patch_exact(outer, _OUTER_ENCRYPT_ORIGINAL, _OUTER_ENCRYPT_PATCHED, "outer PFS package builder")
-    changed |= _patch_if_present(outer, _OUTER_STREAM_ENCRYPT_ORIGINAL, _OUTER_STREAM_ENCRYPT_PATCHED, "outer PFS streaming builder")
+    # MkPFS / Publishing Tools keep the outer superblock plaintext but AES-XTS transform every
+    # other outer-PFS block. Older Packizard profiles disabled this for FullDebug, which leaves
+    # signed metadata plaintext on disk and breaks PPR superblock authentication on console.
+    changed |= _patch_if_present(
+        outer, _OUTER_ENCRYPT_PATCHED, _OUTER_ENCRYPT_ORIGINAL,
+        "restore outer PFS package encryption"
+    )
+    changed |= _patch_if_present(
+        outer, _OUTER_STREAM_ENCRYPT_PATCHED, _OUTER_STREAM_ENCRYPT_ORIGINAL,
+        "restore outer PFS streaming encryption"
+    )
     changed |= _patch_if_present(vendor / INNER_ASSEMBLER_RELATIVE, _INNER_AFID_ORIGINAL, _INNER_AFID_PATCHED, "inner AFID ordering", strict=True)
 
     changed |= _patch_if_present(inner_reader, _INNER_READER_DATA_END_ORIGINAL, _INNER_READER_DATA_END_PATCHED, "inner reader data/meta geometry", strict=True)

@@ -208,11 +208,14 @@ class LibProsperoFihProfileTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 apply_fih_reference_profile(vendor)
 
-    def test_refuses_unknown_outer_pfs_preimage(self):
+    def test_leaves_unknown_outer_pfs_source_untouched(self):
         with tempfile.TemporaryDirectory() as td:
             vendor = self._vendor(Path(td), outer="// changed upstream\n")
-            with self.assertRaises(RuntimeError):
-                apply_fih_reference_profile(vendor)
+            self.assertFalse(apply_fih_reference_profile(vendor))
+            outer = (
+                vendor / "src" / "LibProsperoPkg" / "PFS" / "ProsperoOuterPfsBuilder.cs"
+            ).read_text(encoding="utf-8")
+            self.assertEqual(outer, "// changed upstream\n")
 
 
 if __name__ == "__main__":

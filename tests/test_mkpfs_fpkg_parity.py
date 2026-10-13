@@ -115,5 +115,34 @@ class MkPfsParityComparatorTests(unittest.TestCase):
         self.assertIn("nwonly && nwonlyNdblock > 0", source)
 
 
+    def test_playgo_entries_match_mkpfs_fixture_sizes(self):
+        # Deterministic parity fixture: six actual inner files.
+        inner_files = 6
+        hash_table_size = 0x38 + inner_files * 8
+        ficm_size = 0x10 + (2 * inner_files)
+        self.assertEqual(hash_table_size, 104)
+        self.assertEqual(ficm_size, 28)
+
+    def test_playgo_builder_uses_paths_not_derived_chunk_count(self):
+        playgo = (
+            ROOT / "vendor" / "LibProsperoPKG" / "src" / "LibProsperoPkg"
+            / "PlayGo" / "ProsperoPlayGo.cs"
+        ).read_text(encoding="utf-8")
+        pkg = (
+            ROOT / "vendor" / "LibProsperoPKG" / "src" / "LibProsperoPkg"
+            / "PKG" / "ProsperoPkgBuilder.cs"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("BuildHashTable(IReadOnlyList<string> innerPaths)", playgo)
+        self.assertIn("ProsperoPs5FlatPathTable.HashPath", playgo)
+        self.assertIn("ProsperoPs5FlatPathTable.HeaderSeed.CopyTo", playgo)
+        self.assertNotIn("BuildHashTable(uint chunkCount)", playgo)
+
+        self.assertIn("playgoInnerPaths", pkg)
+        self.assertIn("2 * playgoInnerPaths.Length", pkg)
+        self.assertIn("BuildHashTable(playgoInnerPaths)", pkg)
+        self.assertNotIn("BuildHashTable(playgoFileCount / 2)", pkg)
+
+
 if __name__ == "__main__":
     unittest.main()

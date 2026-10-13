@@ -60,6 +60,7 @@ class ImageReport:
     digest_0x70: str
     digest_0xb0: str
     digest_0xd0: str
+    pfs_sha256: str
     cnt_flags: int
     cnt_entry_count: int
     cnt_sc_entry_count: int
@@ -172,6 +173,9 @@ def inspect_pkg_image(path: str | Path) -> ImageReport:
             warnings.append("FIH 0xA0 does not equal 0x90 block count * 0x10000")
         if field_0x94 != field_0x98:
             warnings.append("FIH 0x94 and 0x98 mirrored values differ")
+
+        pfs_blob = _read_at(fh, pfs_offset, pfs_size, file_size) if pfs_size else b""
+        pfs_sha256 = hashlib.sha256(pfs_blob).hexdigest() if pfs_blob else ""
 
         cnt = _read_at(fh, embedded_cnt_offset, CNT_HEADER_SIZE, file_size)
         if cnt[:4] != CNT_MAGIC:
@@ -292,6 +296,7 @@ def inspect_pkg_image(path: str | Path) -> ImageReport:
             digest_0x70=fih[0x70:0x90].hex(),
             digest_0xb0=fih[0xB0:0xD0].hex(),
             digest_0xd0=fih[0xD0:0xF0].hex(),
+            pfs_sha256=pfs_sha256,
             cnt_flags=cnt_flags,
             cnt_entry_count=cnt_entry_count,
             cnt_sc_entry_count=cnt_sc_entry_count,

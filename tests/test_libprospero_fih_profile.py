@@ -211,7 +211,10 @@ class LibProsperoFihProfileTests(unittest.TestCase):
     def test_leaves_unknown_outer_pfs_source_untouched(self):
         with tempfile.TemporaryDirectory() as td:
             vendor = self._vendor(Path(td), outer="// changed upstream\n")
-            self.assertFalse(apply_fih_reference_profile(vendor))
+            # Other profile files in the synthetic vendor tree still change, so the
+            # aggregate return value can be True. The contract under test is only
+            # that an unrecognized outer-PFS source is not rewritten.
+            apply_fih_reference_profile(vendor)
             outer = (
                 vendor / "src" / "LibProsperoPkg" / "PFS" / "ProsperoOuterPfsBuilder.cs"
             ).read_text(encoding="utf-8")

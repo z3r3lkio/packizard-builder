@@ -19,8 +19,11 @@ class MkPfsParityComparatorTests(unittest.TestCase):
             }
         )
         self.assertFalse(result["parity"])
-        self.assertEqual(result["critical_differences"][0]["field"], "pfs_size")
-        self.assertEqual(result["tolerated_differences"][0]["field"], "digest_0x30")
+        self.assertEqual(
+            [item["field"] for item in result["critical_differences"]],
+            ["pfs_size", "digest_0x30"],
+        )
+        self.assertEqual(result["tolerated_differences"], [])
 
     def test_cnt_entry_flags_and_size_are_critical_but_hash_is_tolerated(self):
         result = classify(
@@ -44,19 +47,22 @@ class MkPfsParityComparatorTests(unittest.TestCase):
             ["entry_0x0001.sha256"],
         )
 
-    def test_only_digest_differences_can_still_have_structural_parity(self):
+    def test_only_entry_hash_differences_can_still_have_structural_parity(self):
         result = classify(
             {
                 "reference": {},
                 "candidate": {},
                 "differences": [
-                    {"field": "digest_0x70", "reference": "aa", "candidate": "bb"},
                     {"field": "entry_0x0020.sha256", "reference": "aa", "candidate": "bb"},
                 ],
             }
         )
         self.assertTrue(result["parity"])
         self.assertFalse(result["critical_differences"])
+        self.assertEqual(
+            [item["field"] for item in result["tolerated_differences"]],
+            ["entry_0x0020.sha256"],
+        )
 
 
     def test_deterministic_stored_fixture_naps_size_is_672(self):
@@ -162,6 +168,22 @@ class MkPfsParityComparatorTests(unittest.TestCase):
             {"digest_0x30", "digest_0x70", "digest_0xb0", "digest_0xd0"},
         )
         self.assertEqual(classified["tolerated_differences"], [])
+
+
+    def test_outer_pfs_ciphertext_is_parity_critical(self):
+        report = {
+            "reference": {},
+            "candidate": {},
+            "differences": [
+                {"field": "pfs_sha256", "reference": "aa", "candidate": "bb"},
+            ],
+        }
+        classified = classify(report)
+        self.assertFalse(classified["parity"])
+        self.assertEqual(
+            [d["field"] for d in classified["critical_differences"]],
+            ["pfs_sha256"],
+        )
 
 
 if __name__ == "__main__":

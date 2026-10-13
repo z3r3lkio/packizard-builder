@@ -46,6 +46,7 @@ CRITICAL_FIELDS = {
     "digest_0x70",
     "digest_0xb0",
     "digest_0xd0",
+    "pfs_sha256",
 }
 
 # Entry existence, flags and size are structural. SHA-256 differences can be

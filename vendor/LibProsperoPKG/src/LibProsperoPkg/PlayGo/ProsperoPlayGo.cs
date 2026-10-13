@@ -258,8 +258,7 @@ public static class ProsperoPlayGo
         BinaryPrimitives.WriteUInt32LittleEndian(s[0x0C..], (uint)tableSize);
         new byte[] { 0x7F, (byte)'F', (byte)'L', (byte)'T' }.CopyTo(s[0x18..]);
         BinaryPrimitives.WriteUInt32LittleEndian(s[0x24..], checked((uint)hashes.Length));
-        BinaryPrimitives.WriteUInt64LittleEndian(s[0x28..], ProsperoPs5FlatPathTable.Seed0);
-        BinaryPrimitives.WriteUInt64LittleEndian(s[0x30..], ProsperoPs5FlatPathTable.Seed1);
+        ProsperoPs5FlatPathTable.HeaderSeed.CopyTo(s[0x28..]);
         for (int i = 0; i < hashes.Length; i++)
             BinaryPrimitives.WriteUInt64LittleEndian(
                 s[(HashTableTableOffset + i * HashTableEntrySize)..], hashes[i]);

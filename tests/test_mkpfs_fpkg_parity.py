@@ -144,5 +144,25 @@ class MkPfsParityComparatorTests(unittest.TestCase):
         self.assertNotIn("BuildHashTable(playgoFileCount / 2)", pkg)
 
 
+    def test_fih_authentication_digests_are_critical(self):
+        report = {
+            "reference": {},
+            "candidate": {},
+            "differences": [
+                {"field": "digest_0x30", "reference": "aa", "candidate": "bb"},
+                {"field": "digest_0x70", "reference": "aa", "candidate": "bb"},
+                {"field": "digest_0xb0", "reference": "aa", "candidate": "bb"},
+                {"field": "digest_0xd0", "reference": "aa", "candidate": "bb"},
+            ],
+        }
+        classified = classify(report)
+        self.assertFalse(classified["parity"])
+        self.assertEqual(
+            {d["field"] for d in classified["critical_differences"]},
+            {"digest_0x30", "digest_0x70", "digest_0xb0", "digest_0xd0"},
+        )
+        self.assertEqual(classified["tolerated_differences"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

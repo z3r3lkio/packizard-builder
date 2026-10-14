@@ -28,19 +28,25 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           
-          # 1) Treat .exlz exactly like exFAT at mount time.
+          # 1) Treat .exlz exactly like exFAT and .flz exactly like .ffpfsc.
           p = Path('src/sm_image.c')
           src = p.read_text()
           old = '  if (strcasecmp(dot, ".exfat") == 0)\n    return IMAGE_FS_EXFAT;'
           new = '  if (strcasecmp(dot, ".exfat") == 0 ||\n      strcasecmp(dot, ".exlz") == 0)\n    return IMAGE_FS_EXFAT;'
           if old not in src:
               raise SystemExit('Expected .exfat detector not found')
+          src = src.replace(old, new, 1)
+
+          old = '  if (strcasecmp(dot, ".ffpfsc") == 0)\n    return IMAGE_FS_PFSC_CONTAINER;'
+          new = '  if (strcasecmp(dot, ".ffpfsc") == 0 ||\n      strcasecmp(dot, ".flz") == 0)\n    return IMAGE_FS_PFSC_CONTAINER;'
+          if old not in src:
+              raise SystemExit('Expected .ffpfsc detector not found')
           p.write_text(src.replace(old, new, 1))
           
           # 2) Beyond the configured game-directory scan depth, continue
           #    recursively looking only for .exlz image files. This leaves
           #    upstream directory/game discovery semantics unchanged while
-          #    allowing EXLZ images anywhere below a normal scan root.
+          #    allowing EXLZ/FLZ images anywhere below a normal scan root.
           p = Path('src/sm_scan_tree.c')
           src = p.read_text()
           marker = 'bool sm_scan_tree_walk(const char *scan_root, const char *dir_path,\n'
@@ -129,7 +135,7 @@ jobs:
           src = src.replace(marker, helper + marker, 1)
           old_depth = '  if (remaining_depth == 0u)\n    return true;'
           new_depth = '''  if (remaining_depth == 0u) {
-              // Preserve upstream scan_depth for directories/games, but EXLZ images
+              // Preserve upstream scan_depth for directories/games, but EXLZ/FLZ images
               // are allowed at any depth below a configured scan root.
               return sm_scan_tree_walk_exlz_deep(scan_root, dir_path, depth_from_root,
                                        callbacks, ctx);
@@ -140,7 +146,7 @@ jobs:
 
           # 3) Custom scanpath= entries replace ShadowMount+'s normal defaults.
           #    Preserve the standard roots too, for both folder-format games
-          #    and EXLZ images, so normal locations keep working.
+          #    and EXLZ/FLZ images, so normal locations keep working.
           p = Path('src/sm_scan.c')
           src = p.read_text()
 
@@ -162,11 +168,14 @@ jobs:
               const char *image_path, const char *image_name,
               unsigned int depth_from_root, void *ctx_ptr);
 
-          static bool collect_candidate_exlz_image_visit(
+          static bool collect_candidate_custom_image_visit(
               const char *image_path, const char *image_name,
               unsigned int depth_from_root, void *ctx_ptr) {
             const char *dot = image_name ? strrchr(image_name, '.') : NULL;
-            if (!dot || strcasecmp(dot, ".exlz") != 0)
+            if (!dot)
+              return true;
+            if (strcasecmp(dot, ".exlz") != 0 &&
+                strcasecmp(dot, ".flz") != 0)
               return true;
             return collect_candidate_image_visit(image_path, image_name,
                                                  depth_from_root, ctx_ptr);
@@ -205,7 +214,7 @@ jobs:
             };
             sm_scan_tree_callbacks_t callbacks = {
                 .on_directory = collect_candidate_directory_visit,
-                .on_image_file = collect_candidate_exlz_image_visit,
+                .on_image_file = collect_candidate_custom_image_visit,
             };
 
             for (int i = 0; k_standard_scan_paths[i] != NULL; i++) {
@@ -279,14 +288,14 @@ jobs:
       - name: Build ShadowMountPlus
         working-directory: ShadowMountPlus
         run: |
-          make clean all VERSION_TAG=1.7beta5-fix1-exlz PS5_SCE_STUBS_DIR="$GITHUB_WORKSPACE/ps5-sdk/sce_stubs"
+          make clean all VERSION_TAG=1.7beta5-fix1-exlz-flz PS5_SCE_STUBS_DIR="$GITHUB_WORKSPACE/ps5-sdk/sce_stubs"
           file shadowmountplus.elf
           sha256sum shadowmountplus.elf | tee shadowmountplus.elf.sha256
 
       - name: Upload ELF
         uses: actions/upload-artifact@v4
         with:
-          name: shadowmountplus-1.7beta5-fix1-exlz-elf
+          name: shadowmountplus-1.7beta5-fix1-exlz-flz-elf
           retention-days: 7
           if-no-files-found: error
           path: |

@@ -12,8 +12,8 @@ fi
 
 machine="$(uname -m)"
 case "$machine" in
-    x86_64) arch="x64" ;;
-    arm64) arch="arm64" ;;
+    x86_64) arch="x64"; expected_macho_arch="x86_64" ;;
+    arm64) arch="arm64"; expected_macho_arch="arm64" ;;
     *) echo "Unsupported macOS architecture: $machine" >&2; exit 2 ;;
 esac
 
@@ -65,19 +65,42 @@ chmod +x "$app/Contents/MacOS/Packizard_Builder" \
     "$app/Contents/MacOS/workers/Packizard-Profile-Worker/Packizard-Profile-Worker" \
     "$app/Contents/MacOS/pkg_bridge/Packizard.PkgBridge"
 
-# The application bundle is modified after PyInstaller signs it by embedding
-# workers and the .NET bridge. Keep the bundle container unsigned for this
-# non-notarized release and sign/verify only the executable payloads we add.
-# Signing or strictly verifying the main executable after injection causes
-# codesign to interpret bridge XML documentation as nested code objects.
+# .NET publish emits XML/PDB documentation next to the executable. They are not
+# required at runtime and previously confused the nested-code signing pass when
+# the bridge was injected under Contents/MacOS.
+find "$app/Contents/MacOS/pkg_bridge" -type f \( -name '*.xml' -o -name '*.pdb' \) -delete
+
+# PyInstaller signs the original bundle before Packizard injects workers and the
+# .NET bridge. Any subsequent modification invalidates that container seal and
+# macOS can report the downloaded app as damaged. Clear stale signatures and
+# sign the FINAL bundle after every payload has been installed.
 xattr -cr "$app"
-codesign --force --sign - "$app/Contents/MacOS/workers/Packizard-Packer-Worker/Packizard-Packer-Worker"
-codesign --force --sign - "$app/Contents/MacOS/workers/Packizard-Profile-Worker/Packizard-Profile-Worker"
-codesign --force --sign - "$app/Contents/MacOS/pkg_bridge/Packizard.PkgBridge"
 rm -rf -- "$app/Contents/_CodeSignature"
-codesign --verify --strict "$app/Contents/MacOS/workers/Packizard-Packer-Worker/Packizard-Packer-Worker"
-codesign --verify --strict "$app/Contents/MacOS/workers/Packizard-Profile-Worker/Packizard-Profile-Worker"
-codesign --verify --strict "$app/Contents/MacOS/pkg_bridge/Packizard.PkgBridge"
+
+codesign_identity="${PACKIZARD_CODESIGN_IDENTITY:--}"
+codesign_args=(--force --deep --sign "$codesign_identity")
+if [[ "$codesign_identity" != "-" ]]; then
+    codesign_args+=(--options runtime --timestamp)
+fi
+codesign "${codesign_args[@]}" "$app"
+
+# CI must reject an internally inconsistent bundle instead of publishing an app
+# that Gatekeeper later calls corrupt/damaged.
+codesign --verify --deep --strict --verbose=2 "$app"
+
+# Ensure the produced package actually contains the native executable expected
+# by the matrix entry (especially important for Apple Silicon / M4 machines).
+for exe in \
+    "$app/Contents/MacOS/Packizard_Builder" \
+    "$app/Contents/MacOS/workers/Packizard-Packer-Worker/Packizard-Packer-Worker" \
+    "$app/Contents/MacOS/workers/Packizard-Profile-Worker/Packizard-Profile-Worker" \
+    "$app/Contents/MacOS/pkg_bridge/Packizard.PkgBridge"; do
+    arches="$(lipo -archs "$exe" 2>/dev/null || true)"
+    if [[ " $arches " != *" $expected_macho_arch "* ]]; then
+        echo "Unexpected architecture for $exe: ${arches:-not a Mach-O executable}; expected $expected_macho_arch" >&2
+        exit 4
+    fi
+done
 
 zip_path="$release_root/Packizard-Builder-$version-macOS-$arch.zip"
 portable="$release_root/Packizard-Builder-$version-macOS-$arch.tar.gz"

@@ -561,7 +561,23 @@ class SectionCard(QFrame):
             for i, widget in enumerate(widgets):
                 self._rows.addWidget(widget, self._row, col + i)
             if widgets and stretch_last:
-                self._rows.setColumnStretch(col + len(widgets) - 1, 1)
+                # Give the remaining horizontal space to the actual input control,
+                # not mechanically to the last widget. This keeps browse/action
+                # buttons at their sizeHint while line edits and other expanding
+                # controls fill the row.
+                expanding = {
+                    QSizePolicy.Expanding,
+                    QSizePolicy.MinimumExpanding,
+                }
+                stretch_index = next(
+                    (
+                        i
+                        for i, widget in enumerate(widgets)
+                        if widget.sizePolicy().horizontalPolicy() in expanding
+                    ),
+                    len(widgets) - 1,
+                )
+                self._rows.setColumnStretch(col + stretch_index, 1)
             self._row += 1
 
 

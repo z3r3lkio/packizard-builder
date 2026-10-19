@@ -53,7 +53,7 @@ jobs:
       - name: Install headless Qt system libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-shape0 libxcb-keysyms1
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-shape0 libxcb-keysyms1 cmake clang zlib1g-dev
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
@@ -80,6 +80,26 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: python -m unittest discover -s tests -v
+      - name: Build pinned MkPFS.CSharp parity oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          oracle=/tmp/MkPFS.CSharp
+          rm -rf -- "$oracle"
+          git init "$oracle"
+          git -C "$oracle" remote add origin https://github.com/danthespal/MkPFS.CSharp.git
+          git -C "$oracle" fetch --depth=1 origin dfca7367897a38f9ad425172f6f4f3f84b40d0c4
+          git -C "$oracle" checkout --detach FETCH_HEAD
+          dotnet build "$oracle/src/MkPFS.Cli/MkPFS.Cli.csproj" -c Release
+      - name: Compare Packizard FPKG against MkPFS oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/run_mkpfs_fpkg_parity.py \
+            --bridge "$GITHUB_WORKSPACE/pkg_bridge/linux-x64/Packizard.PkgBridge" \
+            --mkpfs-repo /tmp/MkPFS.CSharp \
+            --report /tmp/mkpfs-fpkg-parity.json
+          cat /tmp/mkpfs-fpkg-parity.json
       - name: Compile first-party Python sources
         run: python -m compileall -q main.py core gui packizard_engine scripts utils tests
 
@@ -97,10 +117,21 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           architecture: ${{ matrix.arch == 'arm64' && 'arm64' || 'x64' }}
+      - name: Stamp channel build version
+        shell: bash
+        env:
+          PACKIZARD_BRANCH: ${{ github.head_ref || github.ref_name }}
+          PACKIZARD_REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          python scripts/stamp_build_version.py --branch "$PACKIZARD_BRANCH" --ref-type "$PACKIZARD_REF_TYPE"
+          cat version.py
       - uses: actions/setup-dotnet@v6.0.0
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}

@@ -168,6 +168,66 @@ class PackRoundTripTests(unittest.TestCase):
         self.assertEqual(source_index.read_bytes(), b"source-must-remain-unchanged")
         self.assertTrue((packed / "ampr_emu.index").read_bytes().startswith(b"AMPRIDX3"))
 
+    def test_balanced_lanes_roll_over_and_verify(self):
+        source = self.root / "lane-source"
+        (source / "assets").mkdir(parents=True)
+        # Four equally sized incompressible files distribute 2+2 across two lanes.
+        for index in range(4):
+            (source / "assets" / f"part{index}.uasset").write_bytes(
+                bytes(((byte + index * 37) & 0xFF) for byte in range(256)) * 320
+            )
+
+        config = self.root / "lane-profile.toml"
+        config.write_text(
+            """
+[pack]
+default_action = "loose"
+default_block_size = "64KiB"
+io_page_size = "64KiB"
+compression_mode = "fast"
+compression_level = 1
+min_savings_bytes = "1MiB"
+min_savings_ratio = 0.99
+
+[groups.assets]
+pack_count = 2
+assignment = "balanced"
+max_pack_size = "160KiB"
+
+[[rule]]
+action = "compress"
+include = ["assets/**"]
+group = "assets"
+block_size = "64KiB"
+force_pack = true
+""".strip() + "\n",
+            encoding="utf-8",
+        )
+
+        packed = self.root / "lane-packed"
+        run_lz4_pack(
+            source,
+            packed,
+            {"lz4_level": 1, "auto_loose_large": False},
+            custom_config=config,
+            skip_verify=False,
+            workers=1,
+        )
+
+        manifest = load_manifest(packed / "ampr_assets.index")
+        names = [manifest.pack_name(pack_id) for pack_id in range(len(manifest.packs))]
+        self.assertGreaterEqual(len(names), 4)
+        self.assertTrue(any("lane00-vol00" in name for name in names), names)
+        self.assertTrue(any("lane00-vol01" in name for name in names), names)
+        self.assertTrue(any("lane01-vol00" in name for name in names), names)
+        self.assertTrue(any("lane01-vol01" in name for name in names), names)
+
+        used_pack_ids = {
+            chunk.pack_id
+            for chunk in manifest.chunks
+        }
+        self.assertGreaterEqual(len(used_pack_ids), 4)
+
     def test_custom_catch_all_cannot_pack_required_ps5_metadata(self):
         source = self.root / "custom-safety-source"
         (source / "assets").mkdir(parents=True)

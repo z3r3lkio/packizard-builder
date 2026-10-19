@@ -317,4 +317,13 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
+    # Source/CI and frozen releases must exercise the exact same bounded-memory
+    # adaptive pack/verify implementation. The frozen worker also installs
+    # these patches, but installation is idempotent.
+    from streaming_pack import install as _install_streaming_pack
+    from streaming_verify import install as _install_streaming_verify
+
+    current_module = sys.modules[__name__]
+    _install_streaming_pack(current_module)
+    _install_streaming_verify(current_module)
     raise SystemExit(main())

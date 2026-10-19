@@ -7,6 +7,8 @@
 using LibProsperoPkg.PFS;
 using LibProsperoPkg.PFS.Compression;
 using System;
+using System.Buffers.Binary;
+using System.IO;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -72,6 +74,9 @@ public static class PackizardNativeNapsEngine
     public static byte[] Generate(ProsperoPs5InnerImageResult result)
     {
         ArgumentNullException.ThrowIfNull(result);
+
+        if (result.StoredParityMode)
+            return GenerateStoredParity(result);
 
         long mountSize = checked(result.Ndblock * Block64K);
         long metaBase = result.MetaBaseLogical;
@@ -240,6 +245,227 @@ public static class PackizardNativeNapsEngine
         }
 
         return PackizardNativeNapsWriter.Serialize(doc);
+    }
+
+
+    // Stored-mode encoder kept separate from the generic/compressed planner. The on-disk format has
+    // a ninth-byte RAW flag and a mount-relative terminator that the generic DTO cannot represent.
+    // Keeping this path byte-oriented also prevents the normal Kraken planner from drifting.
+    private static byte[] GenerateStoredParity(ProsperoPs5InnerImageResult result)
+    {
+        long mountSize = checked(result.Ndblock * Block64K);
+        long dataEnd = result.DataEndLogical;
+        long metaBase = result.MetaBaseLogical;
+        if (dataEnd < 0 || metaBase < dataEnd || mountSize < metaBase)
+            throw new InvalidOperationException(
+                $"Invalid stored NAPS geometry: dataEnd=0x{dataEnd:X}, metaBase=0x{metaBase:X}, mount=0x{mountSize:X}.");
+
+        var records = new List<(ulong Word, byte Extra)>();
+        var starts = new List<(long Logical, int Index)>();
+        long physicalCursor = 0;
+
+        void AppendRun(long storedOffset)
+        {
+            long c256k = checked(2 * (storedOffset / UBlock));
+            ulong word = ((ulong)physicalCursor & 0x3FFFFUL)
+                | (1UL << 18)
+                | ((ulong)(storedOffset >> 15) << 19)
+                | ((ulong)(c256k & 0x7FFF) << 49);
+            records.Add((word, checked((byte)(c256k >> 15))));
+            physicalCursor = storedOffset;
+        }
+
+        void AppendStd(long logical, int kde, bool even, bool odd, uint field, long bytesConsumed, byte extra)
+        {
+            ulong uoff = (ulong)(2 * (logical % UBlock)) & 0x7FFFFUL;
+            ulong word = ((ulong)physicalCursor & 0x3FFFFUL)
+                | (uoff << 19)
+                | ((ulong)field << 38)
+                | ((even ? 1UL : 0) << 54)
+                | ((odd ? 1UL : 0) << 55)
+                | ((ulong)kde << 56);
+            starts.Add((logical, records.Count));
+            records.Add((word, extra));
+            physicalCursor = checked(physicalCursor + bytesConsumed);
+        }
+
+        void AppendRaw(long logical, int length)
+        {
+            if (length <= 0 || length > UBlock)
+                throw new InvalidOperationException($"Stored RAW NAPS chunk has invalid length {length}.");
+            int kde;
+            bool even;
+            uint field;
+            if (length <= 0x10000)
+            {
+                kde = 0;
+                even = false;
+                field = checked((uint)(length - 1));
+            }
+            else if (length <= 0x20000)
+            {
+                kde = 0;
+                even = true;
+                field = checked((uint)(length - 0x10001));
+            }
+            else
+            {
+                kde = 4;
+                even = true;
+                field = 0xFFFF;
+            }
+            AppendStd(logical, kde, even, odd: true, field, length, extra: 0x08);
+        }
+
+        void AppendZero(long logical) =>
+            AppendStd(logical, kde: 4, even: false, odd: true, field: 7, bytesConsumed: 16, extra: 0);
+
+        void AppendFill(long logical) =>
+            AppendStd(logical, kde: 0, even: false, odd: true, field: 7, bytesConsumed: 8, extra: 0);
+
+        IReadOnlyList<PackizardInnerDataBlock> data = result.DataBlocks;
+        long previousPhysicalEnd = 0;
+        int previousFile = -1;
+        for (int i = 0; i < data.Count; i++)
+        {
+            PackizardInnerDataBlock d = data[i];
+            if (d.UncompressedSize <= 0 || d.UncompressedSize > 0x20000)
+                throw new InvalidOperationException(
+                    $"Stored DATA chunk {i} has invalid logical size {d.UncompressedSize}.");
+            bool firstOfFile = i == 0 || d.FirstFileIndex != previousFile;
+            bool run = i == 0 || (firstOfFile && d.OnDiskOffset != previousPhysicalEnd);
+            if (run)
+                AppendRun(d.OnDiskOffset);
+            else if (d.OnDiskOffset != physicalCursor)
+                throw new InvalidOperationException(
+                    $"Stored DATA physical discontinuity at chunk {i}: expected 0x{physicalCursor:X}, got 0x{d.OnDiskOffset:X}.");
+
+            AppendRaw(d.LogicalOffset, checked((int)d.UncompressedSize));
+            previousPhysicalEnd = checked(d.OnDiskOffset + d.CompressedSize);
+            previousFile = d.FirstFileIndex;
+        }
+
+        if (dataEnd < metaBase)
+        {
+            long gapLength = checked(metaBase - dataEnd);
+            long whole = gapLength / UBlock;
+            int rest = checked((int)(gapLength % UBlock));
+            long gapStored = result.BlockInfoOnDiskOffset;
+            for (long i = 0; i < whole; i++)
+            {
+                AppendRun(gapStored);
+                AppendZero(checked(dataEnd + i * UBlock));
+            }
+
+            long restLogical = checked(dataEnd + whole * UBlock);
+            if (rest > 0x20000)
+                AppendZero(restLogical);
+            else if (rest > 0)
+                AppendFill(restLogical);
+        }
+
+        IReadOnlyList<ProsperoInnerMetaBlockChunk> meta = result.MetadataBlocks;
+        if (result.MetadataPlaintext.Length > 0 && meta.Count == 0)
+            throw new InvalidOperationException("Stored metadata has no captured chunk table.");
+
+        if (meta.Count > 0)
+            AppendRun(result.MetadataOnDiskOffset);
+        long metaLogical = metaBase;
+        for (int i = 0; i < meta.Count; i++)
+        {
+            ProsperoInnerMetaBlockChunk chunk = meta[i];
+            if (chunk.UncompressedSize <= 0 || chunk.UncompressedSize > UBlock)
+                throw new InvalidOperationException(
+                    $"Stored metadata chunk {i} has invalid logical size {chunk.UncompressedSize}.");
+            AppendRaw(metaLogical, chunk.UncompressedSize);
+            metaLogical = checked(metaLogical + chunk.UncompressedSize);
+        }
+        if (metaLogical != mountSize)
+            throw new InvalidOperationException(
+                $"Stored metadata ends at 0x{metaLogical:X}, expected mount end 0x{mountSize:X}.");
+
+        // End-run uses a zero tweak. The following odd uoff is the logical mount-end marker.
+        long endC256k = checked(2 * (physicalCursor / UBlock));
+        ulong endRun = ((ulong)physicalCursor & 0x3FFFFUL)
+            | (1UL << 18)
+            | ((ulong)(endC256k & 0x7FFF) << 49);
+        records.Add((endRun, checked((byte)(endC256k >> 15))));
+        ulong terminatorUoff = ((ulong)(2 * (mountSize % UBlock)) | 1UL) & 0x7FFFFUL;
+        records.Add((((ulong)physicalCursor & 0x3FFFFUL) | (terminatorUoff << 19), 0));
+
+        int numUBlocks = checked((int)((mountSize + UBlock - 1) / UBlock));
+        int numOuterBlocks = checked((int)((result.ImageLength + Block64K - 1) / Block64K));
+        int terminatorIndex = records.Count - 1;
+        int[] first = new int[numUBlocks];
+        int startCursor = 0;
+        for (int u = 0; u < numUBlocks; u++)
+        {
+            long logical = checked((long)u * UBlock);
+            while (startCursor < starts.Count && starts[startCursor].Logical < logical)
+                startCursor++;
+            first[u] = startCursor < starts.Count ? starts[startCursor].Index : terminatorIndex;
+        }
+
+        var fidx = new List<long>(result.AfidLogicalOffsets.Count + 3);
+        fidx.AddRange(result.AfidLogicalOffsets);
+        fidx.Add(dataEnd);
+        fidx.Add(metaBase);
+        fidx.Add(mountSize);
+
+        using var output = new MemoryStream();
+        Span<byte> word8 = stackalloc byte[8];
+        ulong header0 = checked((uint)(fidx.Count - 1))
+            | ((ulong)(uint)numUBlocks << 32); // stored mode: compression selector is zero
+        ulong header1 = checked((ulong)(uint)numOuterBlocks)
+            | ((ulong)(uint)(records.Count - 2) << 24);
+        BinaryPrimitives.WriteUInt64LittleEndian(word8, header0);
+        output.Write(word8);
+        BinaryPrimitives.WriteUInt64LittleEndian(word8, header1);
+        output.Write(word8);
+
+        output.Write(new byte[checked(numOuterBlocks * 8)]);
+
+        for (int i = 0; i < fidx.Count; i++)
+        {
+            long value = fidx[i];
+            for (int b = 0; b < 5; b++)
+                output.WriteByte((byte)(value >> (8 * b)));
+            output.WriteByte(i == fidx.Count - 1 ? (byte)0x40 : (byte)0);
+        }
+
+        int groups = (numUBlocks + 8) >> 3;
+        for (int g = 0; g < groups; g++)
+        {
+            int baseIndex = 8 * g < numUBlocks ? first[8 * g] : terminatorIndex;
+            output.WriteByte((byte)baseIndex);
+            output.WriteByte((byte)(baseIndex >> 8));
+            output.WriteByte((byte)(baseIndex >> 16));
+            for (int k = 1; k < 8; k++)
+            {
+                int u = 8 * g + k;
+                int target = u < numUBlocks ? first[u] : terminatorIndex;
+                int delta = target - baseIndex;
+                if (delta is < 0 or > 255)
+                    throw new InvalidOperationException(
+                        $"Stored NAPS u2c delta {delta} does not fit one byte (group {g}, slot {k}).");
+                output.WriteByte((byte)delta);
+            }
+        }
+
+        while ((output.Length & 7) != 0)
+            output.WriteByte(0);
+
+        foreach ((ulong word, byte extra) in records)
+        {
+            BinaryPrimitives.WriteUInt64LittleEndian(word8, word);
+            output.Write(word8);
+            output.WriteByte(extra);
+        }
+
+        while ((output.Length & 15) != 0)
+            output.WriteByte(0);
+
+        return output.ToArray();
     }
 
     private static void BuildDataPlan(

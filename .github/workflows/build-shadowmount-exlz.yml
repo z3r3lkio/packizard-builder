@@ -13,11 +13,11 @@ jobs:
   shadowmount-exlz:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout ShadowMountPlus 1.7beta5-fix1
+      - name: Checkout ShadowMountPlus 1.7beta7
         uses: actions/checkout@v4
         with:
           repository: drakmor/ShadowMountPlus
-          ref: "1.7-beta5fix1"
+          ref: "1.7beta7"
           path: ShadowMountPlus
           fetch-depth: 0
 
@@ -51,6 +51,18 @@ jobs:
           src = p.read_text()
           marker = 'bool sm_scan_tree_walk(const char *scan_root, const char *dir_path,\n'
           helper = r'''
+          static bool is_distinct_default_scan_root(const char *current_scan_root,
+                                                    const char *path) {
+            static const char *const default_roots[] =
+                SM_DEFAULT_SCAN_PATHS_INITIALIZER;
+            for (int i = 0; default_roots[i] != NULL; ++i) {
+              if (strcmp(default_roots[i], path) != 0)
+                continue;
+              return strcmp(current_scan_root, path) != 0;
+            }
+            return false;
+          }
+
           static bool sm_scan_tree_walk_exlz_deep(
               const char *scan_root, const char *dir_path, unsigned int depth_from_root,
               const sm_scan_tree_callbacks_t *callbacks, void *ctx) {
@@ -58,7 +70,8 @@ jobs:
               return true;
           
             if (depth_from_root > 0u &&
-                is_distinct_configured_scan_root(scan_root, dir_path)) {
+                (is_distinct_configured_scan_root(scan_root, dir_path) ||
+                 is_distinct_default_scan_root(scan_root, dir_path))) {
               return true;
             }
           
@@ -288,14 +301,14 @@ jobs:
       - name: Build ShadowMountPlus
         working-directory: ShadowMountPlus
         run: |
-          make clean all VERSION_TAG=1.7beta5-fix1-exlz-flz PS5_SCE_STUBS_DIR="$GITHUB_WORKSPACE/ps5-sdk/sce_stubs"
+          make clean all VERSION_TAG=1.7beta7-exlz-flz PS5_SCE_STUBS_DIR="$GITHUB_WORKSPACE/ps5-sdk/sce_stubs"
           file shadowmountplus.elf
           sha256sum shadowmountplus.elf | tee shadowmountplus.elf.sha256
 
       - name: Upload ELF
         uses: actions/upload-artifact@v4
         with:
-          name: shadowmountplus-1.7beta5-fix1-exlz-flz-elf
+          name: shadowmountplus-1.7beta7-exlz-flz-elf
           retention-days: 7
           if-no-files-found: error
           path: |

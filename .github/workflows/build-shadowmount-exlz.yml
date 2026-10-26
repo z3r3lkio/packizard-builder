@@ -34,34 +34,42 @@ jobs:
           # 1) Treat .exlz exactly like exFAT and .flz exactly like .ffpfsc.
           p = Path('src/sm_image.c')
           src = p.read_text()
-          old = '  if (strcasecmp(dot, ".exfat") == 0)\n    return IMAGE_FS_EXFAT;'
-          new = '  if (strcasecmp(dot, ".exfat") == 0 ||\n      strcasecmp(dot, ".exlz") == 0)\n    return IMAGE_FS_EXFAT;'
-          if old not in src:
-              raise SystemExit('Expected .exfat detector not found')
-          src = src.replace(old, new, 1)
+          if 'strcasecmp(dot, ".exlz")' not in src:
+              old = '  if (strcasecmp(dot, ".exfat") == 0)\n    return IMAGE_FS_EXFAT;'
+              new = '  if (strcasecmp(dot, ".exfat") == 0 ||\n      strcasecmp(dot, ".exlz") == 0)\n    return IMAGE_FS_EXFAT;'
+              if old not in src:
+                  raise SystemExit('Expected .exfat detector not found')
+              src = src.replace(old, new, 1)
 
-          old = '  if (strcasecmp(dot, ".ffpfsc") == 0)\n    return IMAGE_FS_PFSC_CONTAINER;'
-          new = '  if (strcasecmp(dot, ".ffpfsc") == 0 ||\n      strcasecmp(dot, ".flz") == 0)\n    return IMAGE_FS_PFSC_CONTAINER;'
-          if old not in src:
-              raise SystemExit('Expected .ffpfsc detector not found')
-          p.write_text(src.replace(old, new, 1))
+          if 'strcasecmp(dot, ".flz")' not in src:
+              old = '  if (strcasecmp(dot, ".ffpfsc") == 0)\n    return IMAGE_FS_PFSC_CONTAINER;'
+              new = '  if (strcasecmp(dot, ".ffpfsc") == 0 ||\n      strcasecmp(dot, ".flz") == 0)\n    return IMAGE_FS_PFSC_CONTAINER;'
+              if old not in src:
+                  raise SystemExit('Expected .ffpfsc detector not found')
+              src = src.replace(old, new, 1)
+          p.write_text(src)
 
           # 1b) Beta 8 validates title IDs character-by-character before
           #     confirming the string length. Guard the exact 9-char shape first
           #     so malformed/short strings cannot be read past their terminator.
           p = Path('src/sm_gameinfo.c')
           src = p.read_text()
-          old = '''bool is_supported_game_title_id(const char *title_id) {
+          safe = '''bool is_supported_game_title_id(const char *title_id) {
+            if (!title_id || strlen(title_id) != 9u)
+              return false;'''
+          if safe not in src:
+              old = '''bool is_supported_game_title_id(const char *title_id) {
             if (!title_id)
               return false;
             for (size_t i = 0; i < 4u; ++i) {'''
-          new = '''bool is_supported_game_title_id(const char *title_id) {
+              new = '''bool is_supported_game_title_id(const char *title_id) {
             if (!title_id || strlen(title_id) != 9u)
               return false;
             for (size_t i = 0; i < 4u; ++i) {'''
-          if old not in src:
-              raise SystemExit('Expected Beta 8 title-id validator not found')
-          p.write_text(src.replace(old, new, 1))
+              if old not in src:
+                  raise SystemExit('Unexpected title-id validator shape')
+              src = src.replace(old, new, 1)
+          p.write_text(src)
           
           # 2) Beyond the configured game-directory scan depth, continue
           #    recursively looking only for .exlz image files. This leaves
@@ -313,7 +321,7 @@ jobs:
         run: |
           set -euo pipefail
           sed -i 's#https://ftp.gnu.org/gnu/libmicrohttpd/#https://ftpmirror.gnu.org/libmicrohttpd/#' pacbrew-repo/libmicrohttpd/PKGBUILD
-          for pkg in openlibm json-c zlib libpng libmicrohttpd sqlite; do
+          for pkg in openlibm json-c zlib libjpeg-turbo libpng libmicrohttpd sqlite; do
             pushd "pacbrew-repo/$pkg"
             makepkg -c -f
             sudo pacman --noconfirm -U ./ps5-payload-*.pkg.tar.gz
